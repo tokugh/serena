@@ -243,3 +243,48 @@ class TypeScriptLanguageServer(LanguageServer):
         #   causes this and solve it.
         sleep(1)
         return await super()._send_references_request(relative_file_path, line, column)
+
+    @override
+    def _supports_lsp_type_hierarchy(self) -> bool:
+        """TypeScript language server does not support LSP 3.17 type hierarchy methods."""
+        return False
+
+    @override
+    def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
+        """
+        Check if a TypeScript class symbol is inheriting from the target class.
+        This checks for TypeScript inheritance syntax.
+        """
+        try:
+            # Read the line where the class is defined
+            abs_path = os.path.join(self.repository_root_path, file_path)
+            if not os.path.exists(abs_path):
+                return False
+                
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            class_range = class_symbol.get("range", {})
+            start_line = class_range.get("start", {}).get("line", -1)
+            
+            if start_line < 0 or start_line >= len(lines):
+                return False
+            
+            # Check the class definition line for inheritance
+            class_line = lines[start_line].strip()
+            
+            # Look for TypeScript patterns: "class Child extends Parent" or "class Child implements Interface"
+            if f"extends {target_class_name}" in class_line or f"implements {target_class_name}" in class_line:
+                return True
+                
+            # Also check for interfaces in implements lists
+            if "implements" in class_line and target_class_name in class_line:
+                implements_part = class_line.split("implements", 1)[1] if "implements" in class_line else ""
+                if target_class_name in implements_part.replace(" ", "").split(","):
+                    return True
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.log(f"Error checking TypeScript inheritance in {file_path}: {e}", logging.DEBUG)
+            return False

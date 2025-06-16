@@ -198,3 +198,52 @@ class Intelephense(LanguageServer):
         # TODO: same as above, also only a problem if the definition is in another file
         sleep(1)
         return await super()._send_definition_request(definition_params)
+
+    @override
+    def _supports_lsp_type_hierarchy(self) -> bool:
+        """Intelephense does not support LSP 3.17 type hierarchy methods."""
+        return False
+
+    @override
+    def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
+        """
+        Check if a PHP class symbol is inheriting from the target class.
+        This checks for PHP inheritance and interface implementation.
+        """
+        try:
+            # Read the line where the class is defined
+            abs_path = os.path.join(self.repository_root_path, file_path)
+            if not os.path.exists(abs_path):
+                return False
+                
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            class_range = class_symbol.get("range", {})
+            start_line = class_range.get("start", {}).get("line", -1)
+            
+            if start_line < 0 or start_line >= len(lines):
+                return False
+            
+            # Check the class definition line for inheritance
+            class_line = lines[start_line].strip()
+            
+            # Look for PHP inheritance patterns: 
+            # "class Child extends Parent" or "class Child implements Interface"
+            if f"extends {target_class_name}" in class_line or f"implements {target_class_name}" in class_line:
+                return True
+                
+            # Check for comma-separated implements lists
+            if "implements" in class_line and target_class_name in class_line:
+                implements_part = class_line.split("implements", 1)[1] if "implements" in class_line else ""
+                # Remove opening brace and split by commas
+                implements_clean = implements_part.replace("{", "").strip()
+                implements_items = [item.strip() for item in implements_clean.split(",")]
+                if target_class_name in implements_items:
+                    return True
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.log(f"Error checking PHP inheritance in {file_path}: {e}", logging.DEBUG)
+            return False

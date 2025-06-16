@@ -121,3 +121,51 @@ class JediServer(LanguageServer):
             self.server.notify.initialized({})
 
             yield self
+
+    @override
+    def _supports_lsp_type_hierarchy(self) -> bool:
+        """Jedi does not support LSP 3.17 type hierarchy methods."""
+        return False
+
+    @override
+    def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
+        """
+        Check if a Python class symbol is inheriting from the target class.
+        Same heuristic as PyrightServer since both handle Python.
+        """
+        try:
+            # Read the line where the class is defined
+            abs_path = os.path.join(self.repository_root_path, file_path)
+            if not os.path.exists(abs_path):
+                return False
+                
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            class_range = class_symbol.get("range", {})
+            start_line = class_range.get("start", {}).get("line", -1)
+            
+            if start_line < 0 or start_line >= len(lines):
+                return False
+            
+            # Check the class definition line for inheritance
+            class_line = lines[start_line].strip()
+            
+            # Look for patterns like "class Child(Parent):" or "class Child(Base, Parent):"
+            if f"({target_class_name}" in class_line or f", {target_class_name}" in class_line or f"{target_class_name})" in class_line:
+                return True
+                
+            # Also check a few lines after in case the inheritance spans multiple lines
+            for i in range(start_line + 1, min(start_line + 3, len(lines))):
+                line = lines[i].strip()
+                if line.endswith("):") or line.endswith(","):
+                    if target_class_name in line:
+                        return True
+                else:
+                    break  # Stop if we hit a line that doesn't look like continuation
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.log(f"Error checking inheritance in {file_path}: {e}", logging.DEBUG)
+            return False

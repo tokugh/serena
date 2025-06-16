@@ -183,3 +183,53 @@ class RustAnalyzer(LanguageServer):
             await self.server_ready.wait()
 
             yield self
+
+    @override
+    def _supports_lsp_type_hierarchy(self) -> bool:
+        """Rust Analyzer supports LSP 3.17 type hierarchy methods when built with tower-lsp."""
+        return True
+
+    @override
+    def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
+        """
+        Check if a Rust struct/enum/trait is implementing/deriving from the target.
+        Checks for trait implementations and derive macros.
+        """
+        try:
+            # Read the line where the struct/enum/trait is defined
+            abs_path = os.path.join(self.repository_root_path, file_path)
+            if not os.path.exists(abs_path):
+                return False
+                
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            class_range = class_symbol.get("range", {})
+            start_line = class_range.get("start", {}).get("line", -1)
+            
+            if start_line < 0 or start_line >= len(lines):
+                return False
+            
+            # Check lines before the definition for derive macros
+            # Look backwards for #[derive(...)] attributes
+            for i in range(max(0, start_line - 5), start_line + 1):
+                line = lines[i].strip()
+                if line.startswith("#[derive(") and target_class_name in line:
+                    return True
+            
+            # Check for trait implementations: impl TargetTrait for MyStruct
+            for i in range(start_line, min(start_line + 10, len(lines))):
+                line = lines[i].strip()
+                if line.startswith("impl") and target_class_name in line and " for " in line:
+                    # Parse "impl TargetTrait for MyStruct"
+                    impl_parts = line.split(" for ")
+                    if len(impl_parts) >= 2:
+                        trait_part = impl_parts[0].replace("impl", "").strip()
+                        if target_class_name in trait_part:
+                            return True
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.log(f"Error checking Rust trait implementation in {file_path}: {e}", logging.DEBUG)
+            return False

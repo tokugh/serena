@@ -188,3 +188,54 @@ class ClangdLanguageServer(LanguageServer):
             await self.server_ready.wait()
 
             yield self
+
+    @override
+    def _supports_lsp_type_hierarchy(self) -> bool:
+        """Clangd supports LSP 3.17 type hierarchy methods."""
+        return True
+
+    @override
+    def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
+        """
+        Check if a C++ class symbol is inheriting from the target class.
+        This checks for C++ inheritance syntax.
+        """
+        try:
+            # Read the line where the class is defined
+            abs_path = os.path.join(self.repository_root_path, file_path)
+            if not os.path.exists(abs_path):
+                return False
+                
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            class_range = class_symbol.get("range", {})
+            start_line = class_range.get("start", {}).get("line", -1)
+            
+            if start_line < 0 or start_line >= len(lines):
+                return False
+            
+            # Check the class definition line and a few lines after for inheritance
+            # C++ class definitions can span multiple lines
+            for i in range(start_line, min(start_line + 5, len(lines))):
+                line = lines[i].strip()
+                
+                # Look for C++ inheritance patterns: 
+                # "class Child : public Parent", "class Child : private Parent", etc.
+                if ':' in line and target_class_name in line:
+                    # Split on colon to get inheritance part
+                    inheritance_part = line.split(':', 1)[1] if ':' in line else ""
+                    # Check if target class name appears after access specifier
+                    inheritance_clean = inheritance_part.replace("public", "").replace("private", "").replace("protected", "")
+                    if target_class_name in inheritance_clean:
+                        return True
+                
+                # Stop searching if we hit the opening brace
+                if '{' in line:
+                    break
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.log(f"Error checking C++ inheritance in {file_path}: {e}", logging.DEBUG)
+            return False

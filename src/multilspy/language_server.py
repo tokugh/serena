@@ -15,6 +15,7 @@ import pathlib
 import pickle
 import re
 import threading
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from copy import copy
@@ -91,7 +92,7 @@ class LSPFileBuffer:
         self.content_hash = hashlib.md5(self.contents.encode('utf-8')).hexdigest()
 
 
-class LanguageServer:
+class LanguageServer(ABC):
     """
     The LanguageServer class provides a language agnostic interface to the Language Server Protocol.
     It is used to communicate with Language Servers of different programming languages.
@@ -1593,8 +1594,13 @@ class LanguageServer:
     async def request_type_hierarchy_items(
         self, relative_file_path: str, line: int, column: int
     ) -> tuple[list[LSPTypes.TypeHierarchyItem], list[LSPTypes.TypeHierarchyItem]]:
-        """Retrieve the supertypes and subtypes for the symbol at the given position."""
-
+        """
+        Retrieve the supertypes and subtypes for the symbol at the given position.
+        
+        If the language server supports LSP 3.17 type hierarchy, use that. Otherwise,
+        fall back to a find-references based approach for discovering subclasses.
+        """
+        
         if not self.server_started:
             self.logger.log(
                 "request_type_hierarchy_items called before Language Server started",
@@ -1602,6 +1608,16 @@ class LanguageServer:
             )
             raise MultilspyException("Language Server not started")
 
+        # Try LSP type hierarchy first if supported
+        if self._supports_lsp_type_hierarchy():
+            return await self._request_type_hierarchy_lsp(relative_file_path, line, column)
+        else:
+            return await self._request_type_hierarchy_fallback(relative_file_path, line, column)
+
+    async def _request_type_hierarchy_lsp(
+        self, relative_file_path: str, line: int, column: int
+    ) -> tuple[list[LSPTypes.TypeHierarchyItem], list[LSPTypes.TypeHierarchyItem]]:
+        """Use LSP 3.17 type hierarchy methods."""
         with self.open_file(relative_file_path):
             try:
                 prepare_items = await self.server.send.prepare_type_hierarchy(
@@ -1618,6 +1634,7 @@ class LanguageServer:
             except Exception as e:
                 self.logger.log(f"Unexpected error: {e}", logging.ERROR)
                 return [], []
+
         if not prepare_items:
             return [], []
 
@@ -1628,6 +1645,157 @@ class LanguageServer:
         except Exception:
             return [], []
         return supertypes, subtypes
+
+    async def _request_type_hierarchy_fallback(
+        self, relative_file_path: str, line: int, column: int
+    ) -> tuple[list[LSPTypes.TypeHierarchyItem], list[LSPTypes.TypeHierarchyItem]]:
+        """
+        Fallback implementation using find_references to discover subclasses.
+        
+        This approach can only find children (subclasses), not parents.
+        """
+        # Get the symbol at the current position to find what we're looking for
+        symbols_result = await self.request_document_symbols(relative_file_path)
+        if not symbols_result or not symbols_result[0]:
+            return [], []
+        
+        all_symbols, root_symbols = symbols_result
+        
+        # Find the target symbol at the given position
+        target_symbol = self._find_symbol_at_position(all_symbols, line, column)
+        if not target_symbol or target_symbol.get("kind") != multilspy_types.SymbolKind.Class:
+            return [], []
+        
+        target_name = target_symbol["name"]
+        
+        try:
+            # Find all references to this class
+            references = await self.request_references(relative_file_path, line, column)
+        except Exception as e:
+            self.logger.log(f"Error finding references for type hierarchy: {e}", logging.WARNING)
+            return [], []
+        
+        # Find subclasses by examining each reference
+        subclasses = []
+        for ref in references:
+            try:
+                ref_file = ref["relativePath"]
+                ref_line = ref["range"]["start"]["line"]
+                ref_col = ref["range"]["start"]["character"]
+                
+                # Get document symbols for the file containing this reference
+                ref_symbols_result = await self.request_document_symbols(ref_file)
+                if not ref_symbols_result or not ref_symbols_result[0]:
+                    continue
+                
+                ref_all_symbols, ref_root_symbols = ref_symbols_result
+                    
+                # Find if there's a class at this reference location
+                ref_symbol = self._find_symbol_at_position(ref_all_symbols, ref_line, ref_col)
+                if not ref_symbol or ref_symbol.get("kind") != multilspy_types.SymbolKind.Class:
+                    continue
+                    
+                # Check if this class is actually inheriting from our target
+                if self._is_inheriting_from(ref_file, ref_symbol, target_name):
+                    # Convert to TypeHierarchyItem format
+                    hierarchy_item = self._symbol_to_hierarchy_item(ref_symbol, ref_file)
+                    if hierarchy_item:
+                        subclasses.append(hierarchy_item)
+                        
+            except Exception as e:
+                self.logger.log(f"Error processing reference at {ref}: {e}", logging.DEBUG)
+                continue
+        
+        # Remove duplicates based on URI and name
+        unique_subclasses = []
+        seen = set()
+        for item in subclasses:
+            key = (item["uri"], item["name"])
+            if key not in seen:
+                seen.add(key)
+                unique_subclasses.append(item)
+        
+        # Fallback approach cannot reliably find supertypes
+        supertypes: list[LSPTypes.TypeHierarchyItem] = []
+        
+        return supertypes, unique_subclasses
+    
+    def _find_symbol_at_position(self, symbols: list, line: int, column: int) -> dict | None:
+        """Find the symbol that contains or is at the given position."""
+        def _search_in_symbols(symbol_list: list) -> dict | None:
+            for symbol in symbol_list:
+                # Check if position is within this symbol's range
+                symbol_range = symbol.get("range", {})
+                start = symbol_range.get("start", {})
+                end = symbol_range.get("end", {})
+                
+                start_line = start.get("line", -1)
+                start_char = start.get("character", -1)
+                end_line = end.get("line", -1)
+                end_char = end.get("character", -1)
+                
+                if (start_line <= line <= end_line and
+                    (line > start_line or column >= start_char) and
+                    (line < end_line or column <= end_char)):
+                    
+                    # Check children first for more specific match
+                    children = symbol.get("children", [])
+                    if children:
+                        child_match = _search_in_symbols(children)
+                        if child_match:
+                            return child_match
+                    
+                    return symbol
+            return None
+        
+        return _search_in_symbols(symbols)
+    
+    @abstractmethod
+    def _supports_lsp_type_hierarchy(self) -> bool:
+        """
+        Check if this language server supports LSP 3.17 type hierarchy methods.
+        
+        :return: True if the server supports textDocument/prepareTypeHierarchy, 
+                 typeHierarchy/supertypes, and typeHierarchy/subtypes
+        """
+        pass
+
+    @abstractmethod
+    def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
+        """
+        Check if a class symbol is inheriting from the target class.
+        This is a language-specific heuristic that should be implemented by subclasses.
+        
+        :param file_path: Relative path to the file containing the class
+        :param class_symbol: Symbol information for the potential child class
+        :param target_class_name: Name of the class to check inheritance from
+        :return: True if the class_symbol inherits from target_class_name, False otherwise
+        """
+        pass
+    
+    def _symbol_to_hierarchy_item(self, symbol: dict, file_path: str) -> LSPTypes.TypeHierarchyItem | None:
+        """Convert a document symbol to a TypeHierarchyItem."""
+        try:
+            abs_path = os.path.join(self.repository_root_path, file_path)
+            uri = PathUtils.path_to_uri(abs_path)
+            
+            item: LSPTypes.TypeHierarchyItem = {
+                "name": symbol["name"],
+                "kind": symbol["kind"],
+                "uri": uri,
+                "range": symbol["range"],
+                "selectionRange": symbol.get("selectionRange", symbol["range"]),
+            }
+            
+            if "detail" in symbol:
+                item["detail"] = symbol["detail"]
+            if "tags" in symbol:
+                item["tags"] = symbol["tags"]
+                
+            return item
+        except Exception as e:
+            self.logger.log(f"Error converting symbol to hierarchy item: {e}", logging.DEBUG)
+            return None
 
     async def request_type_hierarchy_symbols(
         self, relative_file_path: str, line: int, column: int
@@ -2179,25 +2347,29 @@ class SyncLanguageServer:
     def request_type_hierarchy_items(
         self, relative_file_path: str, line: int, column: int
     ) -> tuple[list[LSPTypes.TypeHierarchyItem], list[LSPTypes.TypeHierarchyItem]]:
-        """Sync wrapper for :func:`LanguageServer.request_type_hierarchy_items`."""
-
-        assert self.loop
+        """Synchronous version of request_type_hierarchy_items."""
+        if not self.is_running():
+            raise RuntimeError("Language server is not running. Cannot make requests to a stopped language server.")
+            
         result = asyncio.run_coroutine_threadsafe(
             self.language_server.request_type_hierarchy_items(relative_file_path, line, column), self.loop
         ).result(timeout=self.timeout)
         return result
 
+
+
     def request_type_hierarchy_symbols(
         self, relative_file_path: str, line: int, column: int
     ) -> tuple[list[multilspy_types.UnifiedSymbolInformation], list[multilspy_types.UnifiedSymbolInformation]]:
-        """Sync wrapper for :func:`LanguageServer.request_type_hierarchy_symbols`."""
-
-        assert self.loop
+        """Synchronous version of request_type_hierarchy_symbols."""
+        if not self.is_running():
+            raise RuntimeError("Language server is not running. Cannot make requests to a stopped language server.")
+            
         result = asyncio.run_coroutine_threadsafe(
-            self.language_server.request_type_hierarchy_symbols(relative_file_path, line, column),
-            self.loop,
+            self.language_server.request_type_hierarchy_symbols(relative_file_path, line, column), self.loop
         ).result(timeout=self.timeout)
         return result
+
 
     def retrieve_full_file_content(self, relative_file_path: str) -> str:
         """

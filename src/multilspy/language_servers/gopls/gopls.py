@@ -152,3 +152,59 @@ class Gopls(LanguageServer):
             await self.server_ready.wait()
 
             yield self
+
+    @override
+    def _supports_lsp_type_hierarchy(self) -> bool:
+        """Gopls supports LSP 3.17 type hierarchy methods."""
+        return True
+
+    @override
+    def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
+        """
+        For Go, inheritance detection via heuristics.
+        Go uses embedding rather than traditional inheritance, so this checks for struct embedding.
+        """
+        try:
+            # Read the line where the struct is defined
+            abs_path = os.path.join(self.repository_root_path, file_path)
+            if not os.path.exists(abs_path):
+                return False
+                
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            class_range = class_symbol.get("range", {})
+            start_line = class_range.get("start", {}).get("line", -1)
+            
+            if start_line < 0 or start_line >= len(lines):
+                return False
+            
+            # For Go structs, look for embedded types within the struct definition
+            # Find the opening brace of the struct
+            brace_line = start_line
+            while brace_line < len(lines) and '{' not in lines[brace_line]:
+                brace_line += 1
+            
+            if brace_line >= len(lines):
+                return False
+            
+            # Look for the target class name as an embedded field
+            # Check lines after the opening brace until the closing brace
+            current_line = brace_line + 1
+            while current_line < len(lines):
+                line = lines[current_line].strip()
+                if line == '}':
+                    break
+                
+                # Check if this line contains just the target class name (embedded field)
+                # Go embedded fields look like: "TargetClass" or "*TargetClass"
+                if line == target_class_name or line == f"*{target_class_name}":
+                    return True
+                    
+                current_line += 1
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.log(f"Error checking Go struct embedding in {file_path}: {e}", logging.DEBUG)
+            return False

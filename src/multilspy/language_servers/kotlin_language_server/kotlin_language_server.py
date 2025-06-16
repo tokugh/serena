@@ -12,6 +12,8 @@ import pathlib
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+from overrides import override
+
 from multilspy.multilspy_logger import MultilspyLogger
 from multilspy.language_server import LanguageServer
 from multilspy.lsp_protocol_handler.server import ProcessLaunchInfo
@@ -225,3 +227,52 @@ class KotlinLanguageServer(LanguageServer):
             self.completions_available.set()
 
             yield self
+
+    @override
+    def _supports_lsp_type_hierarchy(self) -> bool:
+        """Kotlin Language Server does not support LSP 3.17 type hierarchy methods."""
+        return False
+
+    @override
+    def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
+        """
+        Check if a Kotlin class symbol is inheriting from the target class.
+        This checks for Kotlin inheritance and interface implementation.
+        """
+        try:
+            # Read the line where the class is defined
+            abs_path = os.path.join(self.repository_root_path, file_path)
+            if not os.path.exists(abs_path):
+                return False
+                
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            class_range = class_symbol.get("range", {})
+            start_line = class_range.get("start", {}).get("line", -1)
+            
+            if start_line < 0 or start_line >= len(lines):
+                return False
+            
+            # Check the class definition line for inheritance
+            class_line = lines[start_line].strip()
+            
+            # Look for Kotlin inheritance patterns: 
+            # "class Child : Parent" or "class Child : Interface"
+            if f": {target_class_name}" in class_line:
+                return True
+                
+            # Check for comma-separated inheritance lists after the colon
+            if ":" in class_line and target_class_name in class_line:
+                inheritance_part = class_line.split(":", 1)[1] if ":" in class_line else ""
+                # Remove opening brace and split by commas
+                inheritance_clean = inheritance_part.replace("{", "").strip()
+                inheritance_items = [item.strip() for item in inheritance_clean.split(",")]
+                if target_class_name in inheritance_items:
+                    return True
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.log(f"Error checking Kotlin inheritance in {file_path}: {e}", logging.DEBUG)
+            return False

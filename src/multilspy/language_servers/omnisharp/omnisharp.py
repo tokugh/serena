@@ -404,3 +404,54 @@ class OmniSharp(LanguageServer):
             await self.references_available.wait()
 
             yield self
+
+    @override
+    def _supports_lsp_type_hierarchy(self) -> bool:
+        """OmniSharp does not support LSP 3.17 type hierarchy methods."""
+        return False
+
+    @override
+    def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
+        """
+        Check if a C# class symbol is inheriting from the target class.
+        This checks for C# inheritance and interface implementation.
+        """
+        try:
+            # Read the line where the class is defined
+            abs_path = os.path.join(self.repository_root_path, file_path)
+            if not os.path.exists(abs_path):
+                return False
+                
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            class_range = class_symbol.get("range", {})
+            start_line = class_range.get("start", {}).get("line", -1)
+            
+            if start_line < 0 or start_line >= len(lines):
+                return False
+            
+            # Check the class definition line and a few lines after for inheritance
+            # C# class definitions can span multiple lines
+            for i in range(start_line, min(start_line + 5, len(lines))):
+                line = lines[i].strip()
+                
+                # Look for C# inheritance patterns: 
+                # "class Child : Parent" or "class Child : IInterface"
+                if ':' in line and target_class_name in line:
+                    # Split on colon to get inheritance part
+                    inheritance_part = line.split(':', 1)[1] if ':' in line else ""
+                    # Check for the target class in the inheritance list
+                    inheritance_items = [item.strip() for item in inheritance_part.split(',')]
+                    if target_class_name in inheritance_items:
+                        return True
+                
+                # Stop searching if we hit the opening brace
+                if '{' in line:
+                    break
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.log(f"Error checking C# inheritance in {file_path}: {e}", logging.DEBUG)
+            return False

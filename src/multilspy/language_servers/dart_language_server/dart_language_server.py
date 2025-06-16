@@ -141,3 +141,56 @@ class DartLanguageServer(LanguageServer):
             self.server.notify.initialized({})
 
             yield self
+
+    @override
+    def _supports_lsp_type_hierarchy(self) -> bool:
+        """Dart Analysis Server does not support LSP 3.17 type hierarchy methods."""
+        return False
+
+    @override
+    def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
+        """
+        Check if a Dart class symbol is inheriting from the target class.
+        This checks for Dart inheritance and interface implementation.
+        """
+        try:
+            # Read the line where the class is defined
+            abs_path = os.path.join(self.repository_root_path, file_path)
+            if not os.path.exists(abs_path):
+                return False
+                
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            class_range = class_symbol.get("range", {})
+            start_line = class_range.get("start", {}).get("line", -1)
+            
+            if start_line < 0 or start_line >= len(lines):
+                return False
+            
+            # Check the class definition line for inheritance
+            class_line = lines[start_line].strip()
+            
+            # Look for Dart inheritance patterns: 
+            # "class Child extends Parent", "class Child implements Interface", "class Child with Mixin"
+            if (f"extends {target_class_name}" in class_line or 
+                f"implements {target_class_name}" in class_line or
+                f"with {target_class_name}" in class_line):
+                return True
+                
+            # Check for comma-separated lists in implements/with clauses
+            if ("implements" in class_line or "with" in class_line) and target_class_name in class_line:
+                # More precise parsing for comma-separated lists
+                for keyword in ["implements", "with"]:
+                    if keyword in class_line:
+                        parts = class_line.split(keyword, 1)
+                        if len(parts) > 1:
+                            items = [item.strip() for item in parts[1].replace("{", "").split(",")]
+                            if target_class_name in items:
+                                return True
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.log(f"Error checking Dart inheritance in {file_path}: {e}", logging.DEBUG)
+            return False
