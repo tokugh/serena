@@ -11,14 +11,11 @@ from sensai.util.string import ToStringMixin
 
 from multilspy import SyncLanguageServer
 from multilspy.language_server import ReferenceInSymbol as LSPReferenceInSymbol
-from multilspy.lsp_protocol_handler import lsp_types
 from multilspy.multilspy_types import (
     Position,
     SymbolKind,
-    SymbolTag,
     UnifiedSymbolInformation,
 )
-from multilspy.multilspy_utils import PathUtils
 
 if TYPE_CHECKING:
     from .agent import SerenaAgent
@@ -244,29 +241,6 @@ class Symbol(ToStringMixin):
 
     def __init__(self, symbol_root_from_ls: UnifiedSymbolInformation) -> None:
         self.symbol_root = symbol_root_from_ls
-
-    @classmethod
-    def from_type_hierarchy_item(cls, item: lsp_types.TypeHierarchyItem, repository_root_path: str) -> "Symbol":
-        abs_path = os.path.abspath(PathUtils.uri_to_path(item["uri"]))
-        rel_path = os.path.relpath(abs_path, repository_root_path)
-        symbol_info: UnifiedSymbolInformation = {
-            "name": item["name"],
-            "kind": SymbolKind(item["kind"]),
-            "range": item["range"],
-            "selectionRange": item["selectionRange"],
-            "location": {
-                "uri": item["uri"],
-                "range": item["selectionRange"],
-                "absolutePath": abs_path,
-                "relativePath": rel_path,
-            },
-            "children": [],
-        }
-        if "detail" in item:
-            symbol_info["detail"] = item["detail"]
-        if "tags" in item:
-            symbol_info["tags"] = [SymbolTag(tag) for tag in item["tags"]]
-        return cls(symbol_info)
 
     def _tostring_includes(self) -> list[str]:
         return []
@@ -497,6 +471,61 @@ class Symbol(ToStringMixin):
             result["children"] = add_children(self)
 
         return result
+
+    def get_type_hierarchy(
+        self, language_server: "SyncLanguageServer", depth_parents: int = 1, depth_children: int = 1
+    ) -> tuple[list["Symbol"], list["Symbol"]]:
+        """
+        Get the type hierarchy (supertypes and subtypes) for this symbol.
+
+        :param language_server: The language server instance to use for LSP requests
+        :param depth_parents: Maximum depth to traverse for parent types
+        :param depth_children: Maximum depth to traverse for child types
+        :return: Tuple of (supertypes, subtypes) as lists of Symbol objects
+        """
+        from multilspy.multilspy_types import SymbolKind
+
+        # Only works for classes and interfaces
+        if self.symbol_kind not in (SymbolKind.Class, SymbolKind.Interface):
+            return [], []
+
+        # Get the type hierarchy items from language server
+        line = self.line
+        column = self.column
+        relative_path = self.relative_path
+
+        if line is None or column is None or relative_path is None:
+            return [], []
+
+        try:
+            supertypes_info, subtypes_info = language_server.request_type_hierarchy_symbols(relative_path, line, column)
+        except Exception:
+            # Language server doesn't support type hierarchy or other error
+            return [], []
+
+        # Convert to Symbol objects and apply depth limits
+        def convert_to_symbols(symbol_infos: list, max_depth: int) -> list["Symbol"]:
+            if max_depth <= 0:
+                return []
+
+            symbols = []
+            for info in symbol_infos:
+                symbol = Symbol(info)
+                symbols.append(symbol)
+
+                # Recursively get hierarchy for this symbol if depth allows
+                if max_depth > 1:
+                    sub_supers, sub_subs = symbol.get_type_hierarchy(language_server, max_depth - 1, 0)
+                    # For supertypes, we want to continue going up the hierarchy
+                    symbols.extend(sub_supers)
+
+            return symbols
+
+        # Convert supertypes and subtypes with depth limits
+        supertypes = convert_to_symbols(supertypes_info, depth_parents) if depth_parents > 0 else []
+        subtypes = convert_to_symbols(subtypes_info, depth_children) if depth_children > 0 else []
+
+        return supertypes, subtypes
 
 
 @dataclass
