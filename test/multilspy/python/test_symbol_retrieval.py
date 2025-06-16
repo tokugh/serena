@@ -478,7 +478,9 @@ class TestLanguageServerSymbols:
         base_symbol = next(s for s in symbols[0] if s.get("name") == "BaseModel")
         sel_start = base_symbol["selectionRange"]["start"]
         supers, subs = language_server.request_type_hierarchy_symbols(file_path, sel_start["line"], sel_start["character"])
-        assert isinstance(supers, list)
-        assert isinstance(subs, list)
-        if subs:
-            assert all("name" in s for s in subs)
+        assert len(subs) == 2, "Expected 2 subclasses of BaseModel"
+        assert len(supers) == 1, "Expected ABC to be a superclass of BaseModel"
+        sub_names = {sub["name"] for sub in subs}
+        assert sub_names == {"User", "Item"}, "Expected User and Item to be subclasses of BaseModel"
+        super_names = {super_["name"] for super_ in supers}
+        assert super_names == {"ABC"}, "Expected ABC to be a superclass of BaseModel"

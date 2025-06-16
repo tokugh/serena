@@ -176,22 +176,24 @@ class TestSerenaAgent:
         # Verify structure
         assert "supertypes" in hierarchy and "subtypes" in hierarchy
 
-        # BaseModel should have ABC as supertype (if detected by language server)
-        # and User, Item as subtypes
-        if hierarchy["subtypes"]:
-            assert all("name_path" in s for s in hierarchy["subtypes"])
-            subtype_names = [s["name"] for s in hierarchy["subtypes"]]
-            assert "User" in subtype_names or "Item" in subtype_names
+        # BaseModel should have User and Item as subtypes (using AST fallback since pyright doesn't support type hierarchy)
+        assert len(hierarchy["subtypes"]) >= 2, f"Expected at least 2 subtypes (User, Item), got: {hierarchy['subtypes']}"
+        assert all("name_path" in s for s in hierarchy["subtypes"])
+
+        subtype_names = [s["name_path"] for s in hierarchy["subtypes"]]
+        assert "User" in subtype_names, f"Expected 'User' in subtypes, got: {subtype_names}"
+        assert "Item" in subtype_names, f"Expected 'Item' in subtypes, got: {subtype_names}"
 
         # Test with User class - it should have BaseModel as supertype
         user_output = hierarchy_tool.apply("User", relative_path=os.path.join("test_repo", "models.py"))
         user_hierarchy = json.loads(user_output)
 
         assert "supertypes" in user_hierarchy and "subtypes" in user_hierarchy
-        if user_hierarchy["supertypes"]:
-            assert all("name_path" in s for s in user_hierarchy["supertypes"])
-            supertype_names = [s["name"] for s in user_hierarchy["supertypes"]]
-            assert "BaseModel" in supertype_names
+        assert len(user_hierarchy["supertypes"]) >= 1, f"Expected at least 1 supertype (BaseModel), got: {user_hierarchy['supertypes']}"
+        assert all("name_path" in s for s in user_hierarchy["supertypes"])
+
+        supertype_names = [s["name_path"] for s in user_hierarchy["supertypes"]]
+        assert "BaseModel" in supertype_names, f"Expected 'BaseModel' in supertypes, got: {supertype_names}"
 
         # Test error handling - try with a non-class symbol
         try:
