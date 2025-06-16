@@ -4,9 +4,8 @@ from pathlib import Path
 import pytest
 
 from multilspy.language_server import SyncLanguageServer
-from multilspy.multilspy_config import Language, MultilspyConfig
-from multilspy.multilspy_logger import MultilspyLogger
-from test.conftest import get_repo_path
+from multilspy.multilspy_config import Language
+from test.conftest import create_ls
 
 # This mark will be applied to all tests in this module
 pytestmark = pytest.mark.python
@@ -15,14 +14,8 @@ pytestmark = pytest.mark.python
 @pytest.fixture(scope="module")
 def ls_with_ignored_dirs() -> Generator[SyncLanguageServer, None, None]:
     """Fixture to set up an LS for the python test repo with the 'scripts' directory ignored."""
-    config = MultilspyConfig(
-        code_language=Language.PYTHON,
-        trace_lsp_communication=False,
-        ignored_paths=["scripts", "custom_test"],  # Configure the relative path to be ignored
-    )
-    logger = MultilspyLogger()
-    repo_path = get_repo_path(Language.PYTHON)
-    ls = SyncLanguageServer.create(config, logger, str(repo_path))
+    ignored_paths = ["scripts", "custom_test"]
+    ls = create_ls(ignored_paths=ignored_paths, language=Language.PYTHON)
     ls.start()
     try:
         yield ls
@@ -56,13 +49,8 @@ def test_find_references_ignores_dir(ls_with_ignored_dirs: SyncLanguageServer):
 @pytest.mark.parametrize("repo_path", [Language.PYTHON], indirect=True)
 def test_refs_and_symbols_with_glob_patterns(repo_path: Path) -> None:
     """Tests that refs and symbols with glob patterns are ignored."""
-    config = MultilspyConfig(
-        code_language=Language.PYTHON,
-        trace_lsp_communication=False,
-        ignored_paths=["*ipts", "custom_t*"],
-    )
-    logger = MultilspyLogger()
-    ls = SyncLanguageServer.create(config, logger, str(repo_path))
+    ignored_paths = ["*ipts", "custom_t*"]
+    ls = create_ls(ignored_paths=ignored_paths, repo_path=str(repo_path), language=Language.PYTHON)
     ls.start()
     # same as in the above tests
     root = ls.request_full_symbol_tree()[0]

@@ -24,7 +24,6 @@ dependencies = [
   "python-dotenv>=1.0.0, <2",
   "mcp>=1.5.0",
   "fastapi>=0.115.12",
-  "fastmcp>=0.4.1",
   "sensai-utils>=1.4.0",
   "pydantic>=2.10.6",
   "types-pyyaml>=6.0.12.20241230",
@@ -36,10 +35,12 @@ dependencies = [
   "psutil>=7.0.0",
   "docstring_parser>=0.16",
   "joblib>=1.5.1",
+  "tqdm>=4.67.1",
 ]
 
 [project.scripts]
 serena-mcp-server = "serena.mcp:start_mcp_server"
+index-project = "serena.agent:index_project"
 
 [project.license]
 text = "MIT"
@@ -107,7 +108,10 @@ exclude = "^build/|^docs/"
 PYDEVD_DISABLE_FILE_VALIDATION = "1"
 
 [tool.poe.tasks]
-test = "pytest test --color=yes"
+# Uses PYTEST_MARKERS env var for default markers
+# For custom markers, one can either adjust the env var or just use -m option in the command line,
+# as the second -m option will override the first one.
+test = "pytest test -vv -m \"${PYTEST_MARKERS:-not java and not rust and not isolated_process}\""
 _black_check = "black --check --exclude src/multilspy/ src scripts test"
 _ruff_check = "ruff check --exclude .venv/ --exclude src/multilspy/ src scripts test"
 _black_format = "black --exclude .venv/|src/multilspy/ src scripts test"
@@ -258,5 +262,6 @@ markers = [
     "rust: language server running for Rust",
     "typescript: language server running for TypeScript",
     "php: language server running for PHP",
-    "snapshot: snapshot tests",
+    "snapshot: snapshot tests for symbolic editing operations",
+    "isolated_process: test runs with process isolated agent",
 ]

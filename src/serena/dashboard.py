@@ -1,8 +1,8 @@
 import os
 import queue
 import socket
-import sys
 import threading
+from collections.abc import Callable
 
 import uvicorn
 from fastapi import FastAPI
@@ -68,11 +68,18 @@ class ResponseToolNames(BaseModel):
 class SerenaDashboardAPI:
     log = logging.getLogger(__qualname__)
 
-    def __init__(self, memory_log_handler: MemoryLogHandler, tool_names: list[str]) -> None:
+    def __init__(
+        self, memory_log_handler: MemoryLogHandler, tool_names: list[str], shutdown_callback: Callable[[], None] | None = None
+    ) -> None:
         self._memory_log_handler = memory_log_handler
         self._tool_names = tool_names
+        self._shutdown_callback = shutdown_callback
         self._app = FastAPI(title="Serena Dashboard")
         self._setup_routes()
+
+    @property
+    def memory_log_handler(self) -> MemoryLogHandler:
+        return self._memory_log_handler
 
     def _setup_routes(self) -> None:
         self._app.mount("/dashboard", StaticFiles(directory=SERENA_DASHBOARD_DIR), name="dashboard")
@@ -90,11 +97,16 @@ class SerenaDashboardAPI:
         return ResponseToolNames(tool_names=self._tool_names)
 
     async def _shutdown(self) -> None:
-        print("Shutdown initiated by dashbaord ...", file=sys.stderr)
         log.info("Shutting down Serena")
-        # noinspection PyUnresolvedReferences
-        # noinspection PyProtectedMember
-        os._exit(0)
+        if self._shutdown_callback:
+            self._shutdown_callback()
+        else:
+            # Try to use the global shutdown function from process_isolated_agent
+            from serena.process_isolated_agent import request_global_shutdown
+
+            request_global_shutdown()
+            # noinspection PyProtectedMember
+            os._exit(0)
 
     @staticmethod
     def _find_first_free_port(start_port: int) -> int:
@@ -109,7 +121,7 @@ class SerenaDashboardAPI:
 
         raise RuntimeError(f"No free ports found starting from {start_port}")
 
-    def run(self, host: str = "127.0.0.1", port: int = 0x5EDA) -> int:
+    def run(self, host: str = "0.0.0.0", port: int = 0x5EDA) -> int:
         """
         Runs the dashboard on the given host and port and returns the port number.
         """

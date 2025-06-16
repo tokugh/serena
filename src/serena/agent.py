@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Sequence
 from copy import copy, deepcopy
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from fnmatch import fnmatch
 from functools import cached_property
 from logging import Logger
@@ -23,12 +23,14 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, Union, cast
 
+import click
 import yaml
+from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata, func_metadata
 from overrides import override
 from pathspec import PathSpec
 from ruamel.yaml.comments import CommentedMap
 from sensai.util import logging
-from sensai.util.logging import FallbackHandler
+from sensai.util.logging import LOG_DEFAULT_FORMAT, FallbackHandler
 from sensai.util.string import ToStringMixin, dict_string
 
 from multilspy import SyncLanguageServer
@@ -103,6 +105,19 @@ def get_serena_managed_dir(project_root: str | Path) -> str:
     return os.path.join(project_root, SERENA_MANAGED_DIR_NAME)
 
 
+def is_running_in_docker() -> bool:
+    """Check if we're running inside a Docker container."""
+    # Check for Docker-specific files
+    if os.path.exists("/.dockerenv"):
+        return True
+    # Check cgroup for docker references
+    try:
+        with open("/proc/self/cgroup") as f:
+            return "docker" in f.read()
+    except FileNotFoundError:
+        return False
+
+
 @dataclass
 class ProjectConfig(ToStringMixin):
     project_name: str
@@ -145,45 +160,47 @@ class ProjectConfig(ToStringMixin):
         config_with_comments["language"] = dominant_language
         if save_to_disk:
             save_yaml(str(project_root / cls.rel_path_to_project_yml()), config_with_comments, preserve_comments=True)
-        return cls._from_yml_data(config_with_comments)
+        return cls.from_json_dict(config_with_comments)
 
     @classmethod
     def rel_path_to_project_yml(cls) -> str:
         return os.path.join(SERENA_MANAGED_DIR_NAME, cls.SERENA_DEFAULT_PROJECT_FILE)
 
     @classmethod
-    def _from_yml_data(cls, yaml_data: dict[str, Any]) -> Self:
+    def from_json_dict(cls, data: dict[str, Any]) -> Self:
         """
         Create a ProjectConfig instance from a configuration dictionary
         """
+        data = copy(data)
         try:
-            yaml_data["language"] = Language(yaml_data["language"].lower())
+            data["language"] = Language(data["language"].lower())
         except ValueError as e:
-            raise ValueError(f"Invalid language: {yaml_data['language']}.\nValid languages are: {[l.value for l in Language]}") from e
-        return cls(
-            project_name=yaml_data["project_name"],
-            language=yaml_data["language"],
-            ignored_paths=yaml_data.get("ignored_paths", []),
-            excluded_tools=set(yaml_data.get("excluded_tools", [])),
-            read_only=yaml_data.get("read_only", False),
-            ignore_all_files_in_gitignore=yaml_data.get("ignore_all_files_in_gitignore", True),
-            initial_prompt=yaml_data.get("initial_prompt", ""),
-        )
+            raise ValueError(f"Invalid language: {data['language']}.\nValid languages are: {[l.value for l in Language]}") from e
+        return cls(**data)
+
+    def to_json_dict(self) -> dict[str, Any]:
+        result = asdict(self)
+        result["language"] = result["language"].value
+        result["excluded_tools"] = list(result["excluded_tools"])
+        return result
 
     @classmethod
-    def load(cls, project_root: Path | str) -> Self:
+    def load(cls, project_root: Path | str, autogenerate: bool = True) -> Self:
         """
         Load a ProjectConfig instance from the path to the project root.
         """
         project_root = Path(project_root)
         yaml_path = project_root / cls.rel_path_to_project_yml()
         if not yaml_path.exists():
-            raise FileNotFoundError(f"Project configuration file not found: {yaml_path}")
+            if autogenerate:
+                return cls.autogenerate(project_root)
+            else:
+                raise FileNotFoundError(f"Project configuration file not found: {yaml_path}")
         with open(yaml_path, encoding="utf-8") as f:
             yaml_data = yaml.safe_load(f)
         if "project_name" not in yaml_data:
             yaml_data["project_name"] = project_root.name
-        return cls._from_yml_data(yaml_data)
+        return cls.from_json_dict(yaml_data)
 
     def get_excluded_tool_classes(self) -> set[type["Tool"]]:
         return set(ToolRegistry.get_tool_class_by_name(tool_name) for tool_name in self.excluded_tools)
@@ -203,12 +220,19 @@ class Project:
         return self.project_config.language
 
     @classmethod
-    def load(cls, project_root: str | Path) -> Self:
+    def load(cls, project_root: str | Path, autogenerate: bool = True) -> Self:
         project_root = Path(project_root).resolve()
         if not project_root.exists():
             raise FileNotFoundError(f"Project root not found: {project_root}")
-        project_config = ProjectConfig.load(project_root)
+        project_config = ProjectConfig.load(project_root, autogenerate=autogenerate)
         return cls(project_root=str(project_root), project_config=project_config)
+
+    @classmethod
+    def from_json_dict(cls, data: dict) -> Self:
+        return cls(project_root=data["project_root"], project_config=ProjectConfig.from_json_dict(data["project_config"]))
+
+    def to_json_dict(self) -> dict:
+        return {"project_root": self.project_root, "project_config": self.project_config.to_json_dict()}
 
     def path_to_project_yml(self) -> str:
         return os.path.join(self.project_root, self.project_config.rel_path_to_project_yml())
@@ -304,6 +328,19 @@ class SerenaConfigBase(ABC):
         else:
             raise ValueError(f"Project '{project_name}' not found in Serena configuration; valid project names: {self.project_names}")
 
+    def to_json_dict(self) -> dict:
+        """Convert configuration to dictionary for serialization."""
+        result = asdict(self)
+        result["projects"] = [project.to_json_dict() for project in self.projects]
+        return result
+
+    @classmethod
+    def from_json_dict(cls, data: dict) -> Self:
+        """Create configuration from dictionary."""
+        data = copy(data)
+        data["projects"] = [Project.from_json_dict(project_data) for project_data in data["projects"]]
+        return cls(**data)
+
 
 @dataclass(kw_only=True)
 class SerenaConfig(SerenaConfigBase):
@@ -316,6 +353,7 @@ class SerenaConfig(SerenaConfigBase):
     loaded_commented_yaml: CommentedMap
 
     CONFIG_FILE = "serena_config.yml"
+    CONFIG_FILE_DOCKER = "serena_config.docker.yml"  # Docker-specific config file; auto-generated if missing, mounted via docker-compose for user customization
 
     @classmethod
     def autogenerate(cls) -> None:
@@ -329,7 +367,20 @@ class SerenaConfig(SerenaConfigBase):
 
     @classmethod
     def get_config_file_path(cls) -> str:
-        return os.path.join(REPO_ROOT, cls.CONFIG_FILE)
+        config_file = cls.CONFIG_FILE_DOCKER if is_running_in_docker() else cls.CONFIG_FILE
+        return os.path.join(REPO_ROOT, config_file)
+
+    @classmethod
+    def _load_commented_yaml(cls, config_file: str, generate_if_missing: bool = True) -> CommentedMap:
+        if not os.path.exists(config_file):
+            if not generate_if_missing:
+                raise FileNotFoundError(f"Serena configuration file not found: {config_file}")
+            log.info(f"Serena configuration file not found at {config_file}, autogenerating...")
+            cls.autogenerate()
+        try:
+            return load_yaml(config_file, preserve_comments=True)
+        except Exception as e:
+            raise ValueError(f"Error loading Serena configuration from {config_file}: {e}") from e
 
     @classmethod
     def from_config_file(cls, generate_if_missing: bool = True) -> "SerenaConfig":
@@ -337,17 +388,8 @@ class SerenaConfig(SerenaConfigBase):
         Static constructor to create SerenaConfig from the configuration file
         """
         config_file = cls.get_config_file_path()
-        if not os.path.exists(config_file):
-            if not generate_if_missing:
-                raise FileNotFoundError(f"Serena configuration file not found: {config_file}")
-            cls.autogenerate()
-
         log.info(f"Loading Serena configuration from {config_file}")
-        try:
-            loaded_commented_yaml = load_yaml(config_file, preserve_comments=True)
-        except Exception as e:
-            raise ValueError(f"Error loading Serena configuration from {config_file}: {e}") from e
-
+        loaded_commented_yaml = cls._load_commented_yaml(config_file, generate_if_missing)
         # Create instance
         instance = cls(loaded_commented_yaml=loaded_commented_yaml)
 
@@ -371,10 +413,15 @@ class SerenaConfig(SerenaConfigBase):
             project = Project.load(path)
             instance.projects.append(project)
 
-        instance.gui_log_window_enabled = loaded_commented_yaml.get("gui_log_window", False)
+        # Force disable GUI in Docker environment
+        if is_running_in_docker():
+            instance.gui_log_window_enabled = False
+        else:
+            instance.gui_log_window_enabled = loaded_commented_yaml.get("gui_log_window", False)
         instance.log_level = loaded_commented_yaml.get("log_level", loaded_commented_yaml.get("gui_log_level", logging.INFO))
         instance.web_dashboard = loaded_commented_yaml.get("web_dashboard", True)
         instance.tool_timeout = loaded_commented_yaml.get("tool_timeout", DEFAULT_TOOL_TIMEOUT)
+        instance.trace_lsp_communication = loaded_commented_yaml.get("trace_lsp_communication", False)
 
         # re-save the configuration file if any migrations were performed
         if num_project_migrations > 0:
@@ -425,6 +472,16 @@ class SerenaConfig(SerenaConfigBase):
     def remove_project(self, project_name: str) -> None:
         super().remove_project(project_name)
         self.save()
+
+    def to_json_dict(self) -> dict:
+        result = super().to_json_dict()
+        result.pop("loaded_commented_yaml", None)
+        return result
+
+    @classmethod
+    def from_json_dict(cls, data: dict) -> Self:
+        data["loaded_commented_yaml"] = cls._load_commented_yaml(cls.get_config_file_path())
+        return super().from_json_dict(data)
 
 
 class LinesRead:
@@ -494,6 +551,139 @@ class MemoriesManagerMDFilesInProject(MemoriesManager):
         return f"Memory {name} deleted."
 
 
+def create_serena_config(
+    serena_config: SerenaConfigBase | None = None,
+    enable_web_dashboard: bool | None = None,
+    enable_gui_log_window: bool | None = None,
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None = None,
+    trace_lsp_communication: bool | None = None,
+    tool_timeout: float | None = None,
+) -> SerenaConfig:
+    """
+    Create a SerenaConfig instance without instantiating a full SerenaAgent.
+
+    This function extracts the configuration creation logic from SerenaAgent.__init__
+    to allow creating configurations independently for process isolation and other use cases.
+
+    :param serena_config: the base Serena configuration or None to read from default location
+    :param enable_web_dashboard: Whether to enable the web dashboard
+    :param enable_gui_log_window: Whether to enable the GUI log window
+    :param log_level: Log level
+    :param trace_lsp_communication: Whether to trace LSP communication
+    :param tool_timeout: Timeout in seconds for tool execution
+    :return: A fully configured SerenaConfig instance
+    """
+    # obtain serena configuration
+    if serena_config is not None:
+        # If a complete SerenaConfig is provided, use it directly
+        if isinstance(serena_config, SerenaConfig):
+            config = serena_config
+        else:
+            # For SerenaConfigBase instances (like test configs), create an in-memory SerenaConfig
+            # that preserves the base config attributes without loading from file
+            from ruamel.yaml.comments import CommentedMap
+
+            config = SerenaConfig.__new__(SerenaConfig)  # Create without calling __init__
+            # Initialize basic attributes from base config
+            config.projects = getattr(serena_config, "projects", [])
+            config.gui_log_window_enabled = serena_config.gui_log_window_enabled
+            config.log_level = serena_config.log_level
+            config.trace_lsp_communication = serena_config.trace_lsp_communication
+            config.web_dashboard = serena_config.web_dashboard
+            config.tool_timeout = serena_config.tool_timeout
+            # Set empty yaml for in-memory config
+            config.loaded_commented_yaml = CommentedMap()
+    else:
+        config = SerenaConfig.from_config_file()
+
+    # Apply parameter overrides
+    if enable_web_dashboard is not None:
+        config.web_dashboard = enable_web_dashboard
+    if enable_gui_log_window is not None:
+        config.gui_log_window_enabled = enable_gui_log_window
+    if log_level is not None:
+        log_level = cast(Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], log_level.upper())
+        # transform to int
+        config.log_level = logging.getLevelNamesMapping()[log_level]
+    if trace_lsp_communication is not None:
+        config.trace_lsp_communication = trace_lsp_communication
+    if tool_timeout is not None:
+        config.tool_timeout = tool_timeout
+
+    # Note: Project registration/activation is handled separately by the caller
+    # since it involves complex logic that may require the full agent context
+
+    return config
+
+
+def create_ls_for_project(
+    project: str | Project,
+    log_level: int = logging.INFO,
+    ls_timeout: float | None = DEFAULT_TOOL_TIMEOUT - 5,
+    trace_lsp_communication: bool = False,
+) -> SyncLanguageServer:
+    """
+    Create a language server for a project. Note that you will have to start it
+    before performing any LS operations.
+
+    :param project: either a path to the project root or a ProjectConfig instance.
+        If no project.yml is found, the default project configuration will be used.
+    :param log_level: the log level for the language server
+    :param ls_timeout: the timeout for the language server
+    :param trace_lsp_communication: whether to trace LSP communication
+    :return: the language server
+    """
+    if isinstance(project, str):
+        project_instance = Project.load(project, autogenerate=True)
+    else:
+        project_instance = project
+
+    project_config = project_instance.project_config
+    ignored_paths = project_config.ignored_paths
+    if len(ignored_paths) > 0:
+        log.info(f"Using {len(ignored_paths)} ignored paths from the explicit project configuration.")
+        log.debug(f"Ignored paths: {ignored_paths}")
+    if project_config.ignore_all_files_in_gitignore:
+        log.info(f"Parsing all gitignore files in {project_instance.project_root}")
+        gitignore_parser = GitignoreParser(project_instance.project_root)
+        log.info(f"Found {len(gitignore_parser.get_ignore_specs())} gitignore files.")
+        for spec in gitignore_parser.get_ignore_specs():
+            log.debug(f"Adding {len(spec.patterns)} patterns from {spec.file_path} to the ignored paths.")
+            ignored_paths.extend(spec.patterns)
+    log.debug(f"Using {len(ignored_paths)} ignored paths in total.")
+    multilspy_config = MultilspyConfig(
+        code_language=project_instance.language,
+        ignored_paths=ignored_paths,
+        trace_lsp_communication=trace_lsp_communication,
+    )
+    ls_logger = MultilspyLogger(log_level=log_level)
+    log.info(f"Creating language server instance for {project_instance.project_root}.")
+    return SyncLanguageServer.create(
+        multilspy_config,
+        ls_logger,
+        project_instance.project_root,
+        timeout=ls_timeout,
+    )
+
+
+@click.command()
+@click.argument("project", type=click.Path(exists=True), required=False, default=os.getcwd())
+@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]), default="WARNING")
+def index_project(project: str, log_level: str = "INFO") -> None:
+    """
+    Index a project by saving the symbols of files to Serena's language server cache.
+
+    :param project: the project to index. By default, the current working directory is used.
+    """
+    log_level_int = logging.getLevelNamesMapping()[log_level.upper()]
+    project = os.path.abspath(project)
+    print(f"Indexing symbols in project {project}")
+    ls = create_ls_for_project(project, log_level=log_level_int)
+    with ls.start_server():
+        ls.index_repository()
+    print(f"Symbols saved to {ls.cache_path}")
+
+
 class SerenaAgent:
     def __init__(
         self,
@@ -520,29 +710,26 @@ class SerenaAgent:
         :param enable_web_dashboard: Whether to enable the web dashboard. If not specified, will take the value from the serena configuration.
         :param enable_gui_log_window: Whether to enable the GUI log window. It currently does not work on macOS, and setting this to True will be ignored then.
             If not specified, will take the value from the serena configuration.
-        :param gui_log_level: Log level for the GUI log window. If not specified, will take the value from the serena configuration.
+        :param log_level: Log level for the GUI log window. If not specified, will take the value from the serena configuration.
         :param tool_timeout: Timeout in seconds for tool execution. If not specified, will take the value from the serena configuration.
         """
-        # obtain serena configuration
-        self.serena_config = serena_config or SerenaConfig.from_config_file()
-        if enable_web_dashboard is not None:
-            self.serena_config.web_dashboard = enable_web_dashboard
-        if enable_gui_log_window is not None:
-            self.serena_config.gui_log_window_enabled = enable_gui_log_window
-        if log_level is not None:
-            log_level = cast(Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], log_level.upper())
-            # transform to int
-            self.serena_config.log_level = logging.getLevelNamesMapping()[log_level]
-        if trace_lsp_communication is not None:
-            self.serena_config.trace_lsp_communication = trace_lsp_communication
-        if tool_timeout is not None:
-            self.serena_config.tool_timeout = tool_timeout
+        # obtain serena configuration using the decoupled factory function
+        self.serena_config = create_serena_config(
+            serena_config=serena_config,
+            enable_web_dashboard=enable_web_dashboard,
+            enable_gui_log_window=enable_gui_log_window,
+            log_level=log_level,
+            trace_lsp_communication=trace_lsp_communication,
+            tool_timeout=tool_timeout,
+        )
 
         # adjust log level
         serena_log_level = self.serena_config.log_level
         if Logger.root.level > serena_log_level:
             log.info(f"Changing the root logger level to {serena_log_level}")
             Logger.root.setLevel(serena_log_level)
+            # Override existing configuration (needed to configure multilspy logger as desired)
+            logging.basicConfig(format=LOG_DEFAULT_FORMAT, level=serena_log_level, force=True)
 
         # open GUI log window if enabled
         self._gui_log_handler: Union["GuiLogViewerHandler", None] = None  # noqa
@@ -561,7 +748,7 @@ class SerenaAgent:
 
         # instantiate all tool classes
         self._all_tools: dict[type[Tool], Tool] = {tool_class: tool_class(self) for tool_class in ToolRegistry.get_all_tool_classes()}
-        tool_names = [tool.get_name() for tool in self._all_tools.values()]
+        tool_names = [tool.get_name_from_cls() for tool in self._all_tools.values()]
 
         # If GUI log window is enabled, set the tool names for highlighting
         if self._gui_log_handler is not None:
@@ -598,7 +785,7 @@ class SerenaAgent:
             modes = SerenaAgentMode.load_default_modes()
         self._context = context
         self._modes = modes
-        log.info(f"Loaded tools ({len(self._all_tools)}): {', '.join([tool.get_name() for tool in self._all_tools.values()])}")
+        log.info(f"Loaded tools ({len(self._all_tools)}): {', '.join([tool.get_name_from_cls() for tool in self._all_tools.values()])}")
 
         self._active_tools: dict[type[Tool], Tool] = {}
         self._update_active_tools()
@@ -783,7 +970,7 @@ class SerenaAgent:
         """
         :return: the list of names of the active tools for the current project
         """
-        return sorted([tool.get_name() for tool in self.get_active_tool_classes()])
+        return sorted([tool.get_name_from_cls() for tool in self.get_active_tool_classes()])
 
     def tool_is_active(self, tool_class: type["Tool"] | str) -> bool:
         """
@@ -800,6 +987,8 @@ class SerenaAgent:
         :return: a string overview of the current configuration, including the active and available configuration options
         """
         result_str = "Current configuration:\n"
+        result_str += f"Serena version: {serena_version()}\n"
+        result_str += f"Loglevel: {self.serena_config.log_level}, trace_lsp_communication={self.serena_config.trace_lsp_communication}\n"
         if self._active_project is not None:
             result_str += f"Active project: {self._active_project.project_name}\n"
         else:
@@ -827,7 +1016,7 @@ class SerenaAgent:
             result_str += "  " + ", ".join(chunk) + "\n"
 
         # Available but not active tools
-        all_tool_names = sorted([tool.get_name() for tool in self._all_tools.values()])
+        all_tool_names = sorted([tool.get_name_from_cls() for tool in self._all_tools.values()])
         inactive_tool_names = [tool for tool in all_tool_names if tool not in active_tool_names]
         if inactive_tool_names:
             result_str += "Available but not active tools:\n"
@@ -844,6 +1033,14 @@ class SerenaAgent:
         """
         Starts/resets the language server for the current project
         """
+        tool_timeout = self.serena_config.tool_timeout
+        if tool_timeout is None or tool_timeout < 0:
+            ls_timeout = None
+        else:
+            if tool_timeout < 10:
+                raise ValueError(f"Tool timeout must be at least 10 seconds, but is {tool_timeout} seconds")
+            ls_timeout = tool_timeout - 5  # the LS timeout is for a single call, it should be smaller than the tool timeout
+
         # stop the language server if it is running
         if self.is_language_server_running():
             assert self.language_server is not None
@@ -853,29 +1050,11 @@ class SerenaAgent:
 
         # instantiate and start the language server
         assert self._active_project is not None
-        ignored_paths = self._active_project.project_config.ignored_paths
-        if len(ignored_paths) > 0:
-            log.info(f"Using {len(ignored_paths)} ignored paths from the explicit project configuration.")
-            log.debug(f"Ignored paths: {ignored_paths}")
-        if self._active_project.project_config.ignore_all_files_in_gitignore:
-            log.info(f"Parsing all gitignore files in {self._active_project.project_root}")
-            gitignore_parser = GitignoreParser(self._active_project.project_root)
-            log.info(f"Found {len(gitignore_parser.get_ignore_specs())} gitignore files.")
-            for spec in gitignore_parser.get_ignore_specs():
-                log.debug(f"Adding {len(spec.patterns)} patterns from {spec.file_path} to the ignored paths.")
-                ignored_paths.extend(spec.patterns)
-        log.debug(f"Using {len(ignored_paths)} ignored paths in total.")
-        multilspy_config = MultilspyConfig(
-            code_language=self._active_project.project_config.language,
-            ignored_paths=ignored_paths,
+        self.language_server = create_ls_for_project(
+            self._active_project,
+            log_level=self.serena_config.log_level,
+            ls_timeout=ls_timeout,
             trace_lsp_communication=self.serena_config.trace_lsp_communication,
-        )
-        ls_logger = MultilspyLogger(log_level=self.serena_config.log_level)
-        log.info(f"Starting language server for {self._active_project.project_root}.")
-        self.language_server = SyncLanguageServer.create(
-            multilspy_config,
-            ls_logger,
-            self._active_project.project_root,
         )
         self.language_server.start()
         if not self.language_server.is_running():
@@ -959,7 +1138,31 @@ class ToolMarkerDoesNotRequireActiveProject:
     pass
 
 
-class Tool(Component):
+class ToolInterface(ABC):
+    """Protocol defining the complete interface that make_tool() expects from a tool."""
+
+    @abstractmethod
+    def get_name(self) -> str:
+        """Get the tool name."""
+        ...
+
+    @abstractmethod
+    def get_apply_docstring(self) -> str:
+        """Get the docstring for the tool application, used by the MCP server."""
+        ...
+
+    @abstractmethod
+    def get_apply_fn_metadata(self) -> FuncMetadata:
+        """Get the metadata for the tool application function, used by the MCP server."""
+        ...
+
+    @abstractmethod
+    def apply_ex(self, log_call: bool = True, catch_exceptions: bool = True, **kwargs: Any) -> str:
+        """Apply the tool with logging and exception handling."""
+        ...
+
+
+class Tool(Component, ToolInterface):
     # NOTE: each tool should implement the apply method, which is then used in
     # the central method of the Tool class `apply_ex`.
     # Failure to do so will result in a RuntimeError at tool execution time.
@@ -971,13 +1174,16 @@ class Tool(Component):
     # and to validate the tool call arguments.
 
     @classmethod
-    def get_name(cls) -> str:
+    def get_name_from_cls(cls) -> str:
         name = cls.__name__
         if name.endswith("Tool"):
             name = name[:-4]
         # convert to snake_case
         name = "".join(["_" + c.lower() if c.isupper() else c for c in name]).lstrip("_")
         return name
+
+    def get_name(self) -> str:
+        return self.get_name_from_cls()
 
     def get_apply_fn(self) -> Callable:
         apply_fn = getattr(self, "apply")
@@ -1001,12 +1207,48 @@ class Tool(Component):
             return ""
         return docstring.strip()
 
-    def get_function_description(self) -> str:
-        apply_fn = self.get_apply_fn()
+    @classmethod
+    def get_apply_docstring_from_cls(cls) -> str:
+        """Get the docstring for the apply method from the class (static metadata).
+        Needed for creating MCP tools in a separate process without running into serialization issues.
+        """
+        # First try to get from __dict__ to handle dynamic docstring changes
+        if "apply" in cls.__dict__:
+            apply_fn = cls.__dict__["apply"]
+        else:
+            # Fall back to getattr for inherited methods
+            apply_fn = getattr(cls, "apply", None)
+            if apply_fn is None:
+                raise AttributeError(f"apply method not defined in {cls}. Did you forget to implement it?")
+
         docstring = apply_fn.__doc__
-        if docstring is None:
-            raise Exception(f"Missing docstring for {self}")
-        return docstring
+        if not docstring:
+            raise AttributeError(f"apply method has no (or empty) docstring in {cls}. Did you forget to implement it?")
+        return docstring.strip()
+
+    def get_apply_docstring(self) -> str:
+        """Get the docstring for the apply method (instance method implementing ToolProtocol)."""
+        return self.get_apply_docstring_from_cls()
+
+    def get_apply_fn_metadata(self) -> FuncMetadata:
+        """Get the metadata for the apply method (instance method implementing ToolProtocol)."""
+        return self.get_apply_fn_metadata_from_cls()
+
+    @classmethod
+    def get_apply_fn_metadata_from_cls(cls) -> FuncMetadata:
+        """Get the metadata for the apply method from the class (static metadata).
+        Needed for creating MCP tools in a separate process without running into serialization issues.
+        """
+        # First try to get from __dict__ to handle dynamic docstring changes
+        if "apply" in cls.__dict__:
+            apply_fn = cls.__dict__["apply"]
+        else:
+            # Fall back to getattr for inherited methods
+            apply_fn = getattr(cls, "apply", None)
+            if apply_fn is None:
+                raise AttributeError(f"apply method not defined in {cls}. Did you forget to implement it?")
+
+        return func_metadata(apply_fn, skip_names=["self", "cls"])
 
     def _log_tool_application(self, frame: Any) -> None:
         params = {}
@@ -1018,7 +1260,7 @@ class Tool(Component):
                 params.update(value)
             else:
                 params[param] = value
-        log.info(f"{self.get_name()}: {dict_string(params)}")
+        log.info(f"{self.get_name_from_cls()}: {dict_string(params)}")
 
     @staticmethod
     def _limit_length(result: str, max_answer_chars: int) -> str:
@@ -1040,9 +1282,9 @@ class Tool(Component):
 
         try:
             if not self.is_active():
-                return f"Error: Tool '{self.get_name()}' is not active. Active tools: {self.agent.get_active_tool_names()}"
+                return f"Error: Tool '{self.get_name_from_cls()}' is not active. Active tools: {self.agent.get_active_tool_names()}"
         except Exception as e:
-            return f"RuntimeError while checking if tool {self.get_name()} is active: {e}"
+            return f"RuntimeError while checking if tool {self.get_name_from_cls()} is active: {e}"
 
         if log_call:
             self._log_tool_application(inspect.currentframe())
@@ -1060,7 +1302,7 @@ class Tool(Component):
 
             # apply the actual tool with a timeout
             execution_fn = lambda: apply_fn(**kwargs)
-            execution_result = execute_with_timeout(execution_fn, self.agent.serena_config.tool_timeout, self.get_name())
+            execution_result = execute_with_timeout(execution_fn, self.agent.serena_config.tool_timeout, self.get_name_from_cls())
             if execution_result.status == ExecutionResult.Status.SUCCESS:
                 result = cast(str, execution_result.result_value)
             else:
@@ -1625,7 +1867,7 @@ class DeleteLinesTool(Tool, ToolMarkerCanEdit):
         """
         if not self.lines_read.were_lines_read(relative_path, (start_line, end_line)):
             read_lines_tool = self.agent.get_tool(ReadFileTool)
-            return f"Error: Must call `{read_lines_tool.get_name()}` first to read exactly the affected lines."
+            return f"Error: Must call `{read_lines_tool.get_name_from_cls()}` first to read exactly the affected lines."
         self.symbol_manager.delete_lines(relative_path, start_line, end_line)
         return SUCCESS_RESULT
 
@@ -1909,21 +2151,19 @@ class SearchForPatternTool(Tool):
             )
         else:
             # we walk through all files in the project starting from the root
-            files_to_search = []
-            for root, dirs, files in os.walk(self.get_project_root()):
-                # Don't go into directories that are ignored by modifying dirs inplace
-                # Explanation for the  + "/" part:
-                # pathspec can't handle the matching of directories if they don't end with a slash!
-                # see https://github.com/cpburnz/python-pathspec/issues/89
+            project_root = self.get_project_root()
+            rel_paths_to_search = []
+            for root, dirs, files in os.walk(project_root):
                 dirs[:] = [d for d in dirs if not self.agent.path_is_gitignored(os.path.join(root, d))]
                 for file in files:
                     file_path = os.path.join(root, file)
                     if not self.agent.path_is_gitignored(file_path):
-                        files_to_search.append(file_path)
+                        relative_path = os.path.relpath(file_path, project_root)
+                        rel_paths_to_search.append(relative_path)
             # TODO (maybe): not super efficient to walk through the files again and filter if glob patterns are provided
             #   but it probably never matters and this version required no further refactoring
             matches = search_files(
-                files_to_search,
+                rel_paths_to_search,
                 pattern,
                 paths_include_glob=paths_include_glob,
                 paths_exclude_glob=paths_exclude_glob,
@@ -2087,7 +2327,7 @@ def _iter_tool_classes(same_module_only: bool = True) -> Generator[type[Tool], N
         yield tool_class
 
 
-_TOOL_REGISTRY_DICT: dict[str, type[Tool]] = {tool_class.get_name(): tool_class for tool_class in _iter_tool_classes()}
+_TOOL_REGISTRY_DICT: dict[str, type[Tool]] = {tool_class.get_name_from_cls(): tool_class for tool_class in _iter_tool_classes()}
 """maps tool name to the corresponding tool class"""
 
 
@@ -2123,7 +2363,7 @@ class ToolRegistry:
 
         tool_dict: dict[str, type[Tool] | Tool] = {}
         for tool_class in tools:
-            tool_dict[tool_class.get_name()] = tool_class
+            tool_dict[tool_class.get_name_from_cls()] = tool_class
         for tool_name in sorted(tool_dict.keys()):
             tool_class = tool_dict[tool_name]
             print(f" * `{tool_name}`: {tool_class.get_tool_description().strip()}")

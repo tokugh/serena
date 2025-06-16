@@ -23,6 +23,7 @@ import time
 from typing import AsyncIterator, Dict, Iterator, List, Optional, Tuple, Union, cast
 
 import pathspec
+import tqdm
 
 from . import multilspy_types
 from .lsp_protocol_handler import lsp_types as LSPTypes
@@ -211,6 +212,10 @@ class LanguageServer:
         self.repository_root_path: str = repository_root_path
         self.logger.log(f"Creating language server instance for {repository_root_path=} with {language_id=} and process launch info: {process_launch_info}", logging.DEBUG)
         
+        self.language_id = language_id
+        self.open_file_buffers: Dict[str, LSPFileBuffer] = {}
+        self.language = Language(language_id)
+        
         # load cache first to prevent any racing conditions due to asyncio stuff
         self._document_symbols_cache:  dict[str, Tuple[str, Tuple[List[multilspy_types.UnifiedSymbolInformation], List[multilspy_types.UnifiedSymbolInformation]]]] = {}
         """Maps file paths to a tuple of (file_content_hash, result_of_request_document_symbols)"""
@@ -236,10 +241,6 @@ class LanguageServer:
             start_independent_lsp_process=config.start_independent_lsp_process,
         )
 
-        self.language_id = language_id
-        self.open_file_buffers: Dict[str, LSPFileBuffer] = {}
-
-        self.language = Language(language_id)
 
         # Set up the pathspec matcher for the ignored paths
         # for all absolute paths in ignored_paths, convert them to relative paths
@@ -317,7 +318,7 @@ class LanguageServer:
 
         return False
     
-    async def _shutdown(self, timeout: float = 10.0):
+    async def _shutdown(self, timeout: float = 5.0):
         """
         A robust shutdown process designed to terminate cleanly on all platforms, including Windows,
         by explicitly closing all I/O pipes.
@@ -946,7 +947,7 @@ class LanguageServer:
             self._document_symbols_cache[cache_key] = (file_data.content_hash, result)
             self._cache_has_changed = True
         return result
-    
+
     async def request_full_symbol_tree(self, within_relative_path: str | None = None, include_body: bool = False) -> List[multilspy_types.UnifiedSymbolInformation]:
         """
         Will go through all files in the project or within a relative path and build a tree of symbols. 
@@ -1209,7 +1210,6 @@ class LanguageServer:
         symbol_body = symbol_body[symbol_start_column:]
         return symbol_body
 
-
     async def request_parsed_files(self) -> list[str]:
         """Retrieves relative paths of all files analyzed by the Language Server."""
         if not self.server_started:
@@ -1220,13 +1220,9 @@ class LanguageServer:
             raise MultilspyException("Language Server not started")
         rel_file_paths = []
         for root, dirs, files in os.walk(self.repository_root_path):
-            # Don't go into directories that are ignored by modifying dirs inplace
-            # Explanation for the  + "/" part:
-            # pathspec can't handle the matching of directories if they don't end with a slash!
-            # see https://github.com/cpburnz/python-pathspec/issues/89
-            dirs[:] = [d for d in dirs if not self.is_ignored_path(os.path.join(root, d) + "/")]
+            dirs[:] = [d for d in dirs if not self.is_ignored_path(os.path.join(root, d))]
             for file in files:
-                rel_file_path = os.path.join(root, file)
+                rel_file_path = os.path.relpath(os.path.join(root, file), start=self.repository_root_path)
                 if not self.is_ignored_path(rel_file_path):
                     rel_file_paths.append(rel_file_path)
         return rel_file_paths
@@ -1662,8 +1658,29 @@ class LanguageServer:
         return [convert(i) for i in supertypes], [convert(i) for i in subtypes]
 
     @property
-    def _cache_path(self) -> Path:
-        return Path(self.repository_root_path) / ".serena" / "cache" / "document_symbols_cache_v20-05-25.pkl"
+    def cache_path(self) -> Path:
+        """
+        The path to the cache file for the document symbols.
+        """
+        return Path(self.repository_root_path) / ".serena" / "cache" / self.language_id / "document_symbols_cache_v20-05-25.pkl"
+
+    async def index_repository(self, progress_bar: bool = True, save_after_n_files: int = 10) -> None:
+        """Will go through the entire repository and "index" all files, meaning save their symbols to the cache.
+
+        :param progress_bar: Whether to show a progress bar while indexing the repository.
+        :param save_after_n_files: How many files to process before saving a checkpoint of the cache.
+        """
+        parsed_files = await self.request_parsed_files()
+        files_processed = 0
+        pbar = tqdm.tqdm(parsed_files, disable=not progress_bar)
+        for relative_file_path in pbar:
+            pbar.set_description(f"Indexing ({os.path.basename(relative_file_path)})")
+            await self.request_document_symbols(relative_file_path, include_body=False)
+            await self.request_document_symbols(relative_file_path, include_body=True)
+            files_processed += 1
+            if files_processed % save_after_n_files == 0:
+                self.save_cache()
+        self.save_cache()
 
     def save_cache(self):
         with self._cache_lock:
@@ -1671,33 +1688,33 @@ class LanguageServer:
                 self.logger.log("No changes to document symbols cache, skipping save", logging.DEBUG)
                 return
 
-            self.logger.log(f"Saving updated document symbols cache to {self._cache_path}", logging.INFO)
-            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self.logger.log(f"Saving updated document symbols cache to {self.cache_path}", logging.INFO)
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                with open(self._cache_path, "wb") as f:
+                with open(self.cache_path, "wb") as f:
                     pickle.dump(self._document_symbols_cache, f)
                 self._cache_has_changed = False
             except Exception as e:
                 self.logger.log(
-                    f"Failed to save document symbols cache to {self._cache_path}: {e}. "
+                    f"Failed to save document symbols cache to {self.cache_path}: {e}. "
                     "Note: this may have resulted in a corrupted cache file.",
                     logging.ERROR,
                 )
 
     def load_cache(self):
-        if not self._cache_path.exists():
+        if not self.cache_path.exists():
             return
 
         with self._cache_lock:
-            self.logger.log(f"Loading document symbols cache from {self._cache_path}", logging.INFO)
+            self.logger.log(f"Loading document symbols cache from {self.cache_path}", logging.INFO)
             try:
-                with open(self._cache_path, "rb") as f:
+                with open(self.cache_path, "rb") as f:
                     self._document_symbols_cache = pickle.load(f)
                 self.logger.log(f"Loaded {len(self._document_symbols_cache)} document symbols from cache.", logging.INFO)   
             except Exception as e:
                 # cache often becomes corrupt, so just skip loading it
                 self.logger.log(
-                    f"Failed to load document symbols cache from {self._cache_path}: {e}. Possible cause: the cache file is corrupted. "
+                    f"Failed to load document symbols cache from {self.cache_path}: {e}. Possible cause: the cache file is corrupted. "
                     "Check for any errors related to saving the cache in the logs.",
                     logging.ERROR,
                 )
@@ -1751,6 +1768,13 @@ class SyncLanguageServer:
         
         self._shutdown_lock = threading.Lock()
         self._is_shutting_down = False
+
+    @property
+    def cache_path(self) -> Path:
+        """
+        The path to the cache file for the document symbols.
+        """
+        return self.language_server.cache_path
 
     @classmethod
     def create(
@@ -1817,12 +1841,9 @@ class SyncLanguageServer:
 
         :return: None
         """
-        self.loop = asyncio.new_event_loop()
-        self.loop_thread = threading.Thread(target=self.loop.run_forever, daemon=True)
-        self.loop_thread.start()
-        ctx = self.language_server.start_server()
-        asyncio.run_coroutine_threadsafe(ctx.__aenter__(), loop=self.loop).result()
+        self.start()
         yield self
+        self.language_server.logger.log("SyncLS Startup: exiting LS context", logging.DEBUG)
         self.stop()
 
     def request_definition(self, file_path: str, line: int, column: int) -> List[multilspy_types.Location]:
@@ -1830,12 +1851,15 @@ class SyncLanguageServer:
         Raise a [textDocument/definition](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_definition) request to the Language Server
         for the symbol at the given line and column in the given file. Wait for the response and return the result.
 
-        :param relative_file_path: The relative path of the file that has the symbol for which definition should be looked up
-        :param line: The line number of the symbol
-        :param column: The column number of the symbol
+        :param file_path: The path of the file relative to the repository root.
+        :param line: The line number (zero-indexed).
+        :param column: The column number (zero-indexed).
 
-        :return List[multilspy_types.Location]: A list of locations where the symbol is defined
+        :return: A list of Locations defining the symbol.
         """
+        if not self.is_running():
+            raise RuntimeError("Language server is not running. Cannot make requests to a stopped language server.")
+            
         result = asyncio.run_coroutine_threadsafe(
             self.language_server.request_definition(file_path, line, column), self.loop
         ).result(timeout=self.timeout)
@@ -1843,15 +1867,18 @@ class SyncLanguageServer:
 
     def request_references(self, file_path: str, line: int, column: int) -> List[multilspy_types.Location]:
         """
-        Raise a [textDocument/references](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_references) request to the Language Server
-        to find references to the symbol at the given line and column in the given file. Wait for the response and return the result.
+        Raises a [textDocument/references](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_references) request to the Language Server
+        for the symbol at the given line and column in the given file. Wait for the response and return the result.
 
-        :param relative_file_path: The relative path of the file that has the symbol for which references should be looked up
-        :param line: The line number of the symbol
-        :param column: The column number of the symbol
+        :param file_path: The path of the file relative to the repository root.
+        :param line: The line number (zero-indexed).
+        :param column: The column number (zero-indexed).
 
-        :return List[multilspy_types.Location]: A list of locations where the symbol is referenced
+        :return: A list of Locations referencing the symbol.
         """
+        if not self.is_running():
+            raise RuntimeError("Language server is not running. Cannot make requests to a stopped language server.")
+            
         try:
             result = asyncio.run_coroutine_threadsafe(
                 self.language_server.request_references(file_path, line, column), self.loop
@@ -1937,6 +1964,9 @@ class SyncLanguageServer:
 
         :return: A list of root symbols representing the top-level packages/modules in the project.
         """
+        if not self.is_running():
+            raise RuntimeError("Language server is not running. Cannot make requests to a stopped language server.")
+        
         result = asyncio.run_coroutine_threadsafe(
             self.language_server.request_full_symbol_tree(within_relative_path, include_body), self.loop
         ).result(timeout=self.timeout)
@@ -1949,7 +1979,9 @@ class SyncLanguageServer:
         Maps relative paths of all contained files to info about top-level symbols in the file
         (name, kind, line, column).
         """
-        assert self.loop
+        if not self.is_running():
+            raise RuntimeError("Language server is not running. Cannot make requests to a stopped language server.")
+            
         result = asyncio.run_coroutine_threadsafe(
             self.language_server.request_dir_overview(relative_dir_path), self.loop
         ).result(timeout=self.timeout)
@@ -2205,6 +2237,21 @@ class SyncLanguageServer:
         ).result(timeout=self.timeout)
         return result
 
+    def index_repository(self, progress_bar: bool = True, timeout: float | None = None, save_after_n_files: int = 10) -> None:
+        """
+        Will go through the entire repository and "index" all files, meaning save their symbols to the cache.
+
+        :param progress_bar: Whether to show a progress bar while indexing the repository.
+        :param save_after_n_files: How many files to process before saving a checkpoint of the cache.
+        :param timeout: since this operation can take a long time, the default timeout (the attribute of the LS instance) is not used.
+            If you want to provide a timeout for indexing, you can pass it here explicitly.
+        :return:
+        """
+        assert self.loop
+        asyncio.run_coroutine_threadsafe(
+            self.language_server.index_repository(progress_bar=progress_bar, save_after_n_files=save_after_n_files), self.loop
+        ).result(timeout=timeout)
+
     def start(self) -> "SyncLanguageServer":
         """
         Starts the language server process and connects to it. Call shutdown when ready.
@@ -2255,7 +2302,7 @@ class SyncLanguageServer:
                 self.language_server.logger.log("Async shutdown tasks completed, returning to main thread", logging.DEBUG)
                 # Note: NOT calling loop.stop() here - let main thread do it
 
-    def stop(self, shutdown_timeout: float = 5.0) -> None:
+    def stop(self, shutdown_timeout: float = 2.0) -> None:
         """
         Stops the language server and robustly cleans up all associated resources,
         including the asyncio event loop, to prevent hangs on process exit.
@@ -2280,26 +2327,30 @@ class SyncLanguageServer:
         
         if not is_windows:
             # 2. Graceful shutdown for Linux/Unix - try proper async cleanup first
+            self.language_server.logger.log("Starting graceful shutdown", logging.INFO)
             shutdown_future = None
             if self.loop and self.loop.is_running():
                 shutdown_future = asyncio.run_coroutine_threadsafe(self._shutdown_and_stop_loop(), self.loop)
             
             # 3. Wait for the background thread to exit
             if self.loop_thread:
+                self.language_server.logger.log("Waiting for event loop thread to exit", logging.INFO)
                 self.loop_thread.join(timeout=shutdown_timeout)
                 if self.loop_thread.is_alive():
                     self.language_server.logger.log("Event loop thread did not terminate within timeout", logging.WARNING)
             
             # 4. Wait for the shutdown coroutine to complete if it was scheduled
             if shutdown_future:
+                self.language_server.logger.log("Waiting for async shutdown to complete", logging.INFO)
                 try:
-                    shutdown_future.result(timeout=2.0)
+                    shutdown_future.result(timeout=shutdown_timeout)
                     self.language_server.logger.log("Graceful async shutdown completed", logging.DEBUG)
                 except Exception as e:
                     self.language_server.logger.log(f"Async shutdown failed: {e}", logging.WARNING)
             
             # 5. Close the loop properly after graceful shutdown
             if self.loop and not self.loop.is_closed():
+                self.language_server.logger.log("Closing event loop", logging.INFO)
                 try:
                     self.loop.close()
                     self.language_server.logger.log("Event loop closed successfully", logging.DEBUG)
@@ -2344,8 +2395,6 @@ class SyncLanguageServer:
         
         shutdown_type = "Nuclear" if is_windows else "Graceful"
         self.language_server.logger.log(f"{shutdown_type} shutdown complete - all references cleared", logging.INFO)
-
-
 
     def save_cache(self):
         """
