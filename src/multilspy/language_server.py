@@ -1612,7 +1612,11 @@ class LanguageServer:
                         "position": {"line": line, "character": column},
                     }
                 )
-            except Exception:
+            except (ConnectionError, asyncio.TimeoutError) as e:
+                self.logger.log(f"Error preparing type hierarchy items: {e}", logging.ERROR)
+                return [], []
+            except Exception as e:
+                self.logger.log(f"Unexpected error: {e}", logging.ERROR)
                 return [], []
         if not prepare_items:
             return [], []
