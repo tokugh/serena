@@ -9,7 +9,9 @@ from multilspy.multilspy_config import Language
 from serena.agent import (
     FindReferencingSymbolsTool,
     FindSymbolTool,
-   Project, ProjectConfig, SerenaAgent,
+    Project,
+    ProjectConfig,
+    SerenaAgent,
     SerenaConfigBase,
     TypeHierarchyTool,
 )
