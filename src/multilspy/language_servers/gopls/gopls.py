@@ -155,8 +155,13 @@ class Gopls(LanguageServer):
 
     @override
     def _supports_lsp_type_hierarchy(self) -> bool:
-        """Gopls supports LSP 3.17 type hierarchy methods."""
-        return True
+        """
+        Gopls claims to support LSP 3.17 type hierarchy methods but Go struct embedding
+        is not traditional inheritance and may not work reliably with LSP type hierarchy.
+        Use fallback approach instead.
+        """
+        return False
+
 
     @override
     def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
@@ -173,7 +178,13 @@ class Gopls(LanguageServer):
             with open(abs_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
-            class_range = class_symbol.get("range", {})
+            # Handle both range formats - direct range and location.range
+            if "range" in class_symbol:
+                class_range = class_symbol.get("range", {})
+            elif "location" in class_symbol and "range" in class_symbol["location"]:
+                class_range = class_symbol["location"]["range"]
+            else:
+                return False
             start_line = class_range.get("start", {}).get("line", -1)
             
             if start_line < 0 or start_line >= len(lines):
@@ -191,14 +202,31 @@ class Gopls(LanguageServer):
             # Look for the target class name as an embedded field
             # Check lines after the opening brace until the closing brace
             current_line = brace_line + 1
-            while current_line < len(lines):
+            brace_count = 1  # We already found one opening brace
+            
+            while current_line < len(lines) and brace_count > 0:
                 line = lines[current_line].strip()
-                if line == '}':
+                
+                # Count braces to handle nested structs
+                brace_count += line.count('{') - line.count('}')
+                
+                if brace_count <= 0:
                     break
                 
-                # Check if this line contains just the target class name (embedded field)
+                # Remove inline comments
+                comment_pos = line.find('//')
+                if comment_pos >= 0:
+                    line_without_comment = line[:comment_pos].strip()
+                else:
+                    line_without_comment = line
+                
+                # Check if this line contains the target class name as an embedded field
                 # Go embedded fields look like: "TargetClass" or "*TargetClass"
-                if line == target_class_name or line == f"*{target_class_name}":
+                if line_without_comment == target_class_name or line_without_comment == f"*{target_class_name}":
+                    return True
+                
+                # Also check if the line starts with the target (for fields with tags)
+                if line_without_comment.startswith(target_class_name + ' ') or line_without_comment.startswith('*' + target_class_name + ' '):
                     return True
                     
                 current_line += 1
@@ -208,3 +236,4 @@ class Gopls(LanguageServer):
         except Exception as e:
             self.logger.log(f"Error checking Go struct embedding in {file_path}: {e}", logging.DEBUG)
             return False
+

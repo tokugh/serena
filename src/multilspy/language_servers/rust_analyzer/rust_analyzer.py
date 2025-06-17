@@ -186,8 +186,12 @@ class RustAnalyzer(LanguageServer):
 
     @override
     def _supports_lsp_type_hierarchy(self) -> bool:
-        """Rust Analyzer supports LSP 3.17 type hierarchy methods when built with tower-lsp."""
-        return True
+        """
+        Rust Analyzer claims to support LSP 3.17 type hierarchy methods but returns 
+        'unknown request' error in practice. Use fallback approach instead.
+        """
+        return False
+
 
     @override
     def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
@@ -204,7 +208,13 @@ class RustAnalyzer(LanguageServer):
             with open(abs_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
-            class_range = class_symbol.get("range", {})
+            # Handle both range formats - direct range and location.range
+            if "range" in class_symbol:
+                class_range = class_symbol.get("range", {})
+            elif "location" in class_symbol and "range" in class_symbol["location"]:
+                class_range = class_symbol["location"]["range"]
+            else:
+                return False
             start_line = class_range.get("start", {}).get("line", -1)
             
             if start_line < 0 or start_line >= len(lines):

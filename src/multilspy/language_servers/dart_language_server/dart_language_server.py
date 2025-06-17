@@ -5,6 +5,7 @@ import pathlib
 import shutil
 import stat
 from typing import AsyncIterator
+from overrides import override
 from multilspy.language_server import LanguageServer
 from multilspy.lsp_protocol_handler.server import ProcessLaunchInfo
 import json
@@ -162,7 +163,13 @@ class DartLanguageServer(LanguageServer):
             with open(abs_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
-            class_range = class_symbol.get("range", {})
+            # Handle both range formats - direct range and location.range
+            if "range" in class_symbol:
+                class_range = class_symbol.get("range", {})
+            elif "location" in class_symbol and "range" in class_symbol["location"]:
+                class_range = class_symbol["location"]["range"]
+            else:
+                return False
             start_line = class_range.get("start", {}).get("line", -1)
             
             if start_line < 0 or start_line >= len(lines):
@@ -170,6 +177,7 @@ class DartLanguageServer(LanguageServer):
             
             # Check the class definition line for inheritance
             class_line = lines[start_line].strip()
+
             
             # Look for Dart inheritance patterns: 
             # "class Child extends Parent", "class Child implements Interface", "class Child with Mixin"
@@ -185,7 +193,16 @@ class DartLanguageServer(LanguageServer):
                     if keyword in class_line:
                         parts = class_line.split(keyword, 1)
                         if len(parts) > 1:
-                            items = [item.strip() for item in parts[1].replace("{", "").split(",")]
+                            # Handle mixed implements/with by splitting at 'with' if it exists
+                            remaining = parts[1]
+                            if keyword == "implements" and " with " in remaining:
+                                remaining = remaining.split(" with ")[0]
+                            elif keyword == "with" and " implements " in remaining:
+                                remaining = remaining.split(" implements ")[1]
+                            
+                            # Clean and split by comma
+                            items = [item.strip().replace("{", "").strip() for item in remaining.split(",")]
+                            items = [item for item in items if item]  # Remove empty items
                             if target_class_name in items:
                                 return True
                     

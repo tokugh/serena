@@ -1650,8 +1650,9 @@ class LanguageServer(ABC):
         self, relative_file_path: str, line: int, column: int
     ) -> tuple[list[LSPTypes.TypeHierarchyItem], list[LSPTypes.TypeHierarchyItem]]:
         """
-        Fallback implementation using find_references to discover subclasses.
+        Fallback implementation to discover subclasses.
         
+        Tries workspace symbols first (more semantic), then falls back to references approach.
         This approach can only find children (subclasses), not parents.
         """
         # Get the symbol at the current position to find what we're looking for
@@ -1661,13 +1662,81 @@ class LanguageServer(ABC):
         
         all_symbols, root_symbols = symbols_result
         
+
+        
         # Find the target symbol at the given position
         target_symbol = self._find_symbol_at_position(all_symbols, line, column)
-        if not target_symbol or target_symbol.get("kind") != multilspy_types.SymbolKind.Class:
+        if not target_symbol:
+            return [], []
+        
+        # Check if the symbol is a class-like symbol (class, struct, interface)
+        symbol_kind = target_symbol.get("kind")
+        if symbol_kind not in [multilspy_types.SymbolKind.Class, multilspy_types.SymbolKind.Struct, multilspy_types.SymbolKind.Interface]:
             return [], []
         
         target_name = target_symbol["name"]
         
+        # First try workspace symbols approach (more semantic and reliable)
+        try:
+            workspace_symbols = await self.request_workspace_symbol("")
+            if workspace_symbols:
+                # Filter to class-like symbols only
+                class_symbols = [
+                    sym for sym in workspace_symbols 
+                    if (hasattr(sym, 'kind') and sym.kind in [multilspy_types.SymbolKind.Class, multilspy_types.SymbolKind.Struct, multilspy_types.SymbolKind.Interface]) or
+                       (isinstance(sym, dict) and sym.get('kind') in [multilspy_types.SymbolKind.Class, multilspy_types.SymbolKind.Struct, multilspy_types.SymbolKind.Interface])
+                ]
+
+                
+                # Find subclasses by checking inheritance relationships
+                subclasses = []
+                for class_symbol in class_symbols:
+                    try:
+                        # Skip the target class itself
+                        symbol_name = getattr(class_symbol, 'name', None) if hasattr(class_symbol, 'name') else class_symbol.get('name')
+                        if symbol_name == target_name:
+                            continue
+                        
+                        # Get the file path for this symbol  
+                        if hasattr(class_symbol, 'location'):
+                            symbol_file = class_symbol.location.relativePath
+                            symbol_dict = class_symbol.__dict__
+                        else:
+                            symbol_file = class_symbol.get('location', {}).get('relativePath')
+                            symbol_dict = class_symbol
+                        
+                        if not symbol_file:
+                            continue
+                        
+                        # Check if this class inherits from our target
+                        if self._is_inheriting_from(symbol_file, symbol_dict, target_name):
+                            # Convert to TypeHierarchyItem format
+                            hierarchy_item = self._symbol_to_hierarchy_item(symbol_dict, symbol_file)
+                            if hierarchy_item:
+                                subclasses.append(hierarchy_item)
+                                
+                    except Exception as e:
+                        symbol_name = getattr(class_symbol, 'name', None) if hasattr(class_symbol, 'name') else class_symbol.get('name', 'unknown')
+                        self.logger.log(f"Error checking inheritance for {symbol_name}: {e}", logging.DEBUG)
+                        continue
+                
+                # Remove duplicates based on URI and name
+                unique_subclasses = []
+                seen = set()
+                for item in subclasses:
+                    key = (item["uri"], item["name"])
+                    if key not in seen:
+                        seen.add(key)
+                        unique_subclasses.append(item)
+                
+                # If we found results with workspace symbols, return them
+                if unique_subclasses:
+                    return [], unique_subclasses
+                    
+        except Exception as e:
+            self.logger.log(f"Workspace symbols approach failed, falling back to references: {e}", logging.DEBUG)
+        
+        # Fall back to reference-based approach
         try:
             # Find all references to this class
             references = await self.request_references(relative_file_path, line, column)
@@ -1725,7 +1794,8 @@ class LanguageServer(ABC):
         def _search_in_symbols(symbol_list: list) -> dict | None:
             for symbol in symbol_list:
                 # Check if position is within this symbol's range
-                symbol_range = symbol.get("range", {})
+                location = symbol.get("location", {})
+                symbol_range = location.get("range", {}) if location else symbol.get("range", {})
                 start = symbol_range.get("start", {})
                 end = symbol_range.get("end", {})
                 

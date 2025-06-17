@@ -10,6 +10,7 @@ import stat
 import pathlib
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
+from overrides import override
 
 from multilspy.multilspy_logger import MultilspyLogger
 from multilspy.language_server import LanguageServer
@@ -191,8 +192,12 @@ class ClangdLanguageServer(LanguageServer):
 
     @override
     def _supports_lsp_type_hierarchy(self) -> bool:
-        """Clangd supports LSP 3.17 type hierarchy methods."""
-        return True
+        """
+        Clangd claims to support LSP 3.17 type hierarchy methods but the implementation
+        is unreliable in practice. Use fallback approach instead.
+        """
+        return False
+
 
     @override
     def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
@@ -209,7 +214,13 @@ class ClangdLanguageServer(LanguageServer):
             with open(abs_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
-            class_range = class_symbol.get("range", {})
+            # Handle both range formats - direct range and location.range
+            if "range" in class_symbol:
+                class_range = class_symbol.get("range", {})
+            elif "location" in class_symbol and "range" in class_symbol["location"]:
+                class_range = class_symbol["location"]["range"]
+            else:
+                return False
             start_line = class_range.get("start", {}).get("line", -1)
             
             if start_line < 0 or start_line >= len(lines):

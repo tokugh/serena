@@ -1,5 +1,7 @@
 import os
+
 import pytest
+
 from multilspy import SyncLanguageServer
 from multilspy.multilspy_config import Language
 
@@ -20,19 +22,19 @@ class TestRustTypeHierarchy:
 
         # Test trait implementation for ChildStruct -> Processable
         hierarchy_result = language_server.request_type_hierarchy(
-            child_file_path, 
-            child_struct_symbol["range"]["start"]["line"], 
-            child_struct_symbol["range"]["start"]["character"], 
-            "Processable"
+            child_file_path,
+            child_struct_symbol["location"]["range"]["start"]["line"],
+            child_struct_symbol["location"]["range"]["start"]["character"],
+            "Processable",
         )
         assert hierarchy_result is True, "ChildStruct should implement Processable trait"
 
         # Test trait implementation: ChildStruct implements Worker
         hierarchy_result = language_server.request_type_hierarchy(
-            child_file_path, 
-            child_struct_symbol["range"]["start"]["line"], 
-            child_struct_symbol["range"]["start"]["character"], 
-            "Worker"
+            child_file_path,
+            child_struct_symbol["location"]["range"]["start"]["line"],
+            child_struct_symbol["location"]["range"]["start"]["character"],
+            "Worker",
         )
         assert hierarchy_result is True, "ChildStruct should implement Worker trait"
 
@@ -49,8 +51,8 @@ class TestRustTypeHierarchy:
         # Test trait implementation
         hierarchy_result = language_server.request_type_hierarchy(
             processor_file_path,
-            processor_struct_symbol["range"]["start"]["line"],
-            processor_struct_symbol["range"]["start"]["character"],
+            processor_struct_symbol["location"]["range"]["start"]["line"],
+            processor_struct_symbol["location"]["range"]["start"]["character"],
             "Processable",
         )
         assert hierarchy_result is True, "ConcreteProcessor should implement Processable trait"
@@ -67,8 +69,8 @@ class TestRustTypeHierarchy:
         for trait_name in ["Readable", "Writable", "Processable"]:
             hierarchy_result = language_server.request_type_hierarchy(
                 processor_file_path,
-                multi_struct_symbol["range"]["start"]["line"],
-                multi_struct_symbol["range"]["start"]["character"],
+                multi_struct_symbol["location"]["range"]["start"]["line"],
+                multi_struct_symbol["location"]["range"]["start"]["character"],
                 trait_name,
             )
             assert hierarchy_result is True, f"MultipleInterfaces should implement {trait_name} trait"
@@ -84,14 +86,14 @@ class TestRustTypeHierarchy:
         assert processable_trait_symbol is not None, "Could not find 'Processable' trait"
 
         hierarchy_result = language_server.request_type_hierarchy(
-            base_file_path, 
-            processable_trait_symbol["range"]["start"]["line"], 
-            processable_trait_symbol["range"]["start"]["character"], 
-            "ChildStruct"
+            base_file_path,
+            processable_trait_symbol["location"]["range"]["start"]["line"],
+            processable_trait_symbol["location"]["range"]["start"]["character"],
+            "ChildStruct",
         )
         assert hierarchy_result is False, "Processable trait should not implement ChildStruct"
 
-    @pytest.mark.parametrize("language_server", [Language.RUST], indirect=True)  
+    @pytest.mark.parametrize("language_server", [Language.RUST], indirect=True)
     def test_request_type_hierarchy_symbols(self, language_server: SyncLanguageServer) -> None:
         """Test the type hierarchy symbols method that returns actual hierarchy information."""
         base_file_path = os.path.join("src", "base.rs")
@@ -106,13 +108,15 @@ class TestRustTypeHierarchy:
         # Test type hierarchy symbols
         supertypes, subtypes = language_server.request_type_hierarchy_symbols(
             base_file_path,
-            processable_trait_symbol["range"]["start"]["line"],
-            processable_trait_symbol["range"]["start"]["character"]
+            processable_trait_symbol["location"]["range"]["start"]["line"],
+            processable_trait_symbol["location"]["range"]["start"]["character"],
         )
 
         # Our fallback implementation should find structs that implement Processable
         subtype_names = {sub["name"] for sub in subtypes}
         expected_subtypes = {"ChildStruct", "ConcreteProcessor", "MultipleInterfaces"}
-        
+
         # At least some of the expected subtypes should be found
-        assert len(subtype_names.intersection(expected_subtypes)) > 0, f"Expected to find some of {expected_subtypes}, but got {subtype_names}"
+        assert (
+            len(subtype_names.intersection(expected_subtypes)) > 0
+        ), f"Expected to find some of {expected_subtypes}, but got {subtype_names}"
