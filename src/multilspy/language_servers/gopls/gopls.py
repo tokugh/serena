@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import subprocess
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, List
@@ -165,75 +166,80 @@ class Gopls(LanguageServer):
 
     @override
     def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
-        """
-        For Go, inheritance detection via heuristics.
-        Go uses embedding rather than traditional inheritance, so this checks for struct embedding.
-        """
-        try:
-            # Read the line where the struct is defined
-            abs_path = os.path.join(self.repository_root_path, file_path)
-            if not os.path.exists(abs_path):
-                return False
+            """
+            For Go, inheritance detection via heuristics.
+            Go uses embedding rather than traditional inheritance, so this checks for struct embedding.
+            """
+            try:
+                # Read the line where the struct is defined
+                abs_path = os.path.join(self.repository_root_path, file_path)
+                if not os.path.exists(abs_path):
+                    return False
+                    
+                with open(abs_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
                 
-            with open(abs_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-            
-            # Handle both range formats - direct range and location.range
-            if "range" in class_symbol:
-                class_range = class_symbol.get("range", {})
-            elif "location" in class_symbol and "range" in class_symbol["location"]:
-                class_range = class_symbol["location"]["range"]
-            else:
-                return False
-            start_line = class_range.get("start", {}).get("line", -1)
-            
-            if start_line < 0 or start_line >= len(lines):
-                return False
-            
-            # For Go structs, look for embedded types within the struct definition
-            # Find the opening brace of the struct
-            brace_line = start_line
-            while brace_line < len(lines) and '{' not in lines[brace_line]:
-                brace_line += 1
-            
-            if brace_line >= len(lines):
-                return False
-            
-            # Look for the target class name as an embedded field
-            # Check lines after the opening brace until the closing brace
-            current_line = brace_line + 1
-            brace_count = 1  # We already found one opening brace
-            
-            while current_line < len(lines) and brace_count > 0:
-                line = lines[current_line].strip()
-                
-                # Count braces to handle nested structs
-                brace_count += line.count('{') - line.count('}')
-                
-                if brace_count <= 0:
-                    break
-                
-                # Remove inline comments
-                comment_pos = line.find('//')
-                if comment_pos >= 0:
-                    line_without_comment = line[:comment_pos].strip()
+                # Handle both range formats - direct range and location.range
+                if "range" in class_symbol:
+                    class_range = class_symbol.get("range", {})
+                elif "location" in class_symbol and "range" in class_symbol["location"]:
+                    class_range = class_symbol["location"]["range"]
                 else:
-                    line_without_comment = line
+                    return False
+                start_line = class_range.get("start", {}).get("line", -1)
                 
-                # Check if this line contains the target class name as an embedded field
-                # Go embedded fields look like: "TargetClass" or "*TargetClass"
-                if line_without_comment == target_class_name or line_without_comment == f"*{target_class_name}":
-                    return True
+                lines = content.split('\n')
+                if start_line < 0 or start_line >= len(lines):
+                    return False
                 
-                # Also check if the line starts with the target (for fields with tags)
-                if line_without_comment.startswith(target_class_name + ' ') or line_without_comment.startswith('*' + target_class_name + ' '):
-                    return True
+                # Use regex to find struct definition and check for embedded fields
+                import re
+                
+                # Find the struct definition starting from start_line
+                struct_content = ""
+                found_opening_brace = False
+                brace_count = 0
+                
+                for i in range(start_line, min(start_line + 50, len(lines))):
+                    line = lines[i]
+                    struct_content += line + "\n"
                     
-                current_line += 1
+                    # Find opening brace
+                    if '{' in line:
+                        found_opening_brace = True
+                        brace_count += line.count('{')
                     
-            return False
-            
-        except Exception as e:
-            self.logger.log(f"Error checking Go struct embedding in {file_path}: {e}", logging.DEBUG)
-            return False
+                    if found_opening_brace:
+                        brace_count -= line.count('}')
+                        # Stop when we've closed all braces
+                        if brace_count <= 0:
+                            break
+                
+                if not found_opening_brace:
+                    return False
+                
+                # Use regex to find embedded fields in the struct
+                # Pattern matches: BaseStruct, *BaseStruct, pkg.BaseStruct, *pkg.BaseStruct
+                # With optional struct tags and comments
+                patterns = [
+                    # Direct embedding: BaseStruct
+                    rf'\b{re.escape(target_class_name)}\b\s*(?://.*)?(?:`[^`]*`)?\s*$',
+                    # Pointer embedding: *BaseStruct  
+                    rf'\*{re.escape(target_class_name)}\b\s*(?://.*)?(?:`[^`]*`)?\s*$',
+                    # Qualified embedding: pkg.BaseStruct
+                    rf'\w+\.{re.escape(target_class_name)}\b\s*(?://.*)?(?:`[^`]*`)?\s*$',
+                    # Qualified pointer embedding: *pkg.BaseStruct
+                    rf'\*\w+\.{re.escape(target_class_name)}\b\s*(?://.*)?(?:`[^`]*`)?\s*$'
+                ]
+                
+                for pattern in patterns:
+                    if re.search(pattern, struct_content, re.MULTILINE):
+                        return True
+                        
+                return False
+                
+            except Exception as e:
+                self.logger.log(f"Error checking Go struct embedding in {file_path}: {e}", logging.DEBUG)
+                return False
+
 

@@ -1702,7 +1702,14 @@ class LanguageServer(ABC):
                             symbol_file = class_symbol.location.relativePath
                             symbol_dict = class_symbol.__dict__
                         else:
-                            symbol_file = class_symbol.get('location', {}).get('relativePath')
+                            location = class_symbol.get('location', {})
+                            if 'uri' in location:
+                                # Convert URI to relative path
+                                from multilspy.multilspy_utils import PathUtils
+                                abs_path = PathUtils.uri_to_path(location['uri'])
+                                symbol_file = os.path.relpath(abs_path, self.repository_root_path)
+                            else:
+                                symbol_file = location.get('relativePath')
                             symbol_dict = class_symbol
                         
                         if not symbol_file:
@@ -1849,12 +1856,26 @@ class LanguageServer(ABC):
             abs_path = os.path.join(self.repository_root_path, file_path)
             uri = PathUtils.path_to_uri(abs_path)
             
+            # Handle different symbol formats (workspace symbols vs document symbols)
+            if "range" in symbol:
+                # Document symbol format
+                symbol_range = symbol["range"]
+                selection_range = symbol.get("selectionRange", symbol_range)
+            elif "location" in symbol and "range" in symbol["location"]:
+                # Workspace symbol format
+                symbol_range = symbol["location"]["range"]
+                selection_range = symbol_range
+            else:
+                # Fallback
+                symbol_range = {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}
+                selection_range = symbol_range
+            
             item: LSPTypes.TypeHierarchyItem = {
                 "name": symbol["name"],
                 "kind": symbol["kind"],
                 "uri": uri,
-                "range": symbol["range"],
-                "selectionRange": symbol.get("selectionRange", symbol["range"]),
+                "range": symbol_range,
+                "selectionRange": selection_range,
             }
             
             if "detail" in symbol:
@@ -1929,7 +1950,18 @@ class LanguageServer(ABC):
         
         # Find the target symbol at the given position
         target_symbol = self._find_symbol_at_position(all_symbols, line, column)
-        if not target_symbol or target_symbol.get("kind") != multilspy_types.SymbolKind.Class:
+        if not target_symbol:
+            return False
+        
+        # Check if it's a class-like symbol (Class, Struct, Interface, etc.)
+        symbol_kind = target_symbol.get("kind")
+        class_like_kinds = {
+            multilspy_types.SymbolKind.Class,
+            multilspy_types.SymbolKind.Struct, 
+            multilspy_types.SymbolKind.Interface,
+            multilspy_types.SymbolKind.Enum
+        }
+        if symbol_kind not in class_like_kinds:
             return False
         
         # Use the language-specific inheritance detection

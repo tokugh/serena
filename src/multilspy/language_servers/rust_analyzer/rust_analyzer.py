@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import stat
 import pathlib
 from contextlib import asynccontextmanager
@@ -195,51 +196,110 @@ class RustAnalyzer(LanguageServer):
 
     @override
     def _is_inheriting_from(self, file_path: str, class_symbol: dict, target_class_name: str) -> bool:
-        """
-        Check if a Rust struct/enum/trait is implementing/deriving from the target.
-        Checks for trait implementations and derive macros.
-        """
-        try:
-            # Read the line where the struct/enum/trait is defined
-            abs_path = os.path.join(self.repository_root_path, file_path)
-            if not os.path.exists(abs_path):
+            """
+            Check if a Rust struct/enum/trait is implementing/deriving from the target.
+            Checks for trait implementations and derive macros, searching across files if needed.
+            """
+            try:
+                struct_name = class_symbol.get("name", "")
+                if not struct_name:
+                    return False
+                
+
+                
+                # First check the current file for derive macros and local impl blocks
+                abs_path = os.path.join(self.repository_root_path, file_path)
+                if not os.path.exists(abs_path):
+                    return False
+                    
+                with open(abs_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Handle both range formats - direct range and location.range
+                if "range" in class_symbol:
+                    class_range = class_symbol.get("range", {})
+                elif "location" in class_symbol and "range" in class_symbol["location"]:
+                    class_range = class_symbol["location"]["range"]
+                else:
+                    return False
+                start_line = class_range.get("start", {}).get("line", -1)
+                
+                lines = content.split('\n')
+                if start_line < 0 or start_line >= len(lines):
+                    return False
+                
+                import re
+                
+                # Check for derive macros above the struct definition
+                for i in range(max(0, start_line - 10), start_line + 1):
+                    if i < len(lines):
+                        line = lines[i].strip()
+                        if line.startswith("#[derive("):
+                            # Parse derive attributes more carefully
+                            derive_content = line
+                            # Handle multi-line derive attributes
+                            j = i
+                            while j < len(lines) and ')]' not in derive_content:
+                                j += 1
+                                if j < len(lines):
+                                    derive_content += lines[j].strip()
+                            
+                            if target_class_name in derive_content:
+                                return True
+                
+                # Search for impl blocks in current file and workspace
+                self.logger.log(f"Checking Rust trait implementation for struct '{struct_name}' implementing trait '{target_class_name}'", logging.DEBUG)
+                
+                impl_patterns = [
+                    # Direct impl: impl TraitName for StructName
+                    rf'impl\s+{re.escape(target_class_name)}\s+for\s+{re.escape(struct_name)}\b',
+                    # Generic impl: impl<T> TraitName for StructName<T>
+                    rf'impl\s*<[^>]*>\s*{re.escape(target_class_name)}\s+for\s+{re.escape(struct_name)}\b',
+                    # Qualified impl: impl path::TraitName for StructName
+                    rf'impl\s+\w+::{re.escape(target_class_name)}\s+for\s+{re.escape(struct_name)}\b',
+                    # Self impl: impl TraitName for Self (when inside impl block)
+                    rf'impl\s+{re.escape(target_class_name)}\s+for\s+Self\b'
+                ]
+                
+                # Check current file first
+                for pattern in impl_patterns:
+                    if re.search(pattern, content, re.MULTILINE | re.IGNORECASE):
+                        return True
+                
+                # Search across workspace for impl blocks (common in Rust)
+                try:
+                    
+                    # Find all .rs files in the workspace
+                    workspace_root = self.repository_root_path
+                    rust_files = []
+                    for root, dirs, files in os.walk(workspace_root):
+                        # Skip target directory and other build artifacts
+                        dirs[:] = [d for d in dirs if d not in ['target', 'node_modules', '.git']]
+                        for file in files:
+                            if file.endswith('.rs'):
+                                rust_files.append(os.path.join(root, file))
+                    
+                    # Limit search to avoid performance issues
+                    for rust_file in rust_files[:50]:  # Limit to first 50 files
+                        try:
+                            with open(rust_file, 'r', encoding='utf-8') as f:
+                                file_content = f.read()
+                            
+                            # Check for impl blocks referencing our struct
+                            for pattern in impl_patterns:
+                                if re.search(pattern, file_content, re.MULTILINE | re.IGNORECASE):
+                                    return True
+                                    
+                        except (UnicodeDecodeError, PermissionError):
+                            continue
+                            
+                except Exception as workspace_error:
+                    # If workspace search fails, continue with local file search only
+                    self.logger.log(f"Workspace search failed: {workspace_error}", logging.DEBUG)
+                
                 return False
                 
-            with open(abs_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-            
-            # Handle both range formats - direct range and location.range
-            if "range" in class_symbol:
-                class_range = class_symbol.get("range", {})
-            elif "location" in class_symbol and "range" in class_symbol["location"]:
-                class_range = class_symbol["location"]["range"]
-            else:
+            except Exception as e:
+                self.logger.log(f"Error checking Rust trait implementation in {file_path}: {e}", logging.DEBUG)
                 return False
-            start_line = class_range.get("start", {}).get("line", -1)
-            
-            if start_line < 0 or start_line >= len(lines):
-                return False
-            
-            # Check lines before the definition for derive macros
-            # Look backwards for #[derive(...)] attributes
-            for i in range(max(0, start_line - 5), start_line + 1):
-                line = lines[i].strip()
-                if line.startswith("#[derive(") and target_class_name in line:
-                    return True
-            
-            # Check for trait implementations: impl TargetTrait for MyStruct
-            for i in range(start_line, min(start_line + 10, len(lines))):
-                line = lines[i].strip()
-                if line.startswith("impl") and target_class_name in line and " for " in line:
-                    # Parse "impl TargetTrait for MyStruct"
-                    impl_parts = line.split(" for ")
-                    if len(impl_parts) >= 2:
-                        trait_part = impl_parts[0].replace("impl", "").strip()
-                        if target_class_name in trait_part:
-                            return True
-                    
-            return False
-            
-        except Exception as e:
-            self.logger.log(f"Error checking Rust trait implementation in {file_path}: {e}", logging.DEBUG)
-            return False
+
