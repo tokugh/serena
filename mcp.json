@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+     "serena": {
+       "command": "/home/mpanchen/.local/bin/uv",
+       "args": [
+         "run",
+         "--directory",
+         "/home/mpanchen/Projects/oraios/serena",
+         "serena-mcp-server",
+         "--project",
+         "serena"
+         ]
+     }
+  }
+}

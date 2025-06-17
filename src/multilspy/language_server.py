@@ -1828,7 +1828,42 @@ class LanguageServer(ABC):
             return unified
 
         return [convert(i) for i in supertypes], [convert(i) for i in subtypes]
-
+    
+    async def request_type_hierarchy(
+        self, relative_file_path: str, line: int, column: int, target_class_name: str
+    ) -> bool:
+        """
+        Check if the class symbol at the given position inherits from the target class.
+        
+        This is a convenience method that combines type hierarchy detection with inheritance checking.
+        
+        :param relative_file_path: The relative path to the file containing the class
+        :param line: The line number of the class symbol
+        :param column: The column number of the class symbol  
+        :param target_class_name: The name of the class to check inheritance from
+        :return: True if the class at the given position inherits from target_class_name, False otherwise
+        """
+        if not self.server_started:
+            self.logger.log(
+                "request_type_hierarchy called before Language Server started",
+                logging.ERROR,
+            )
+            raise MultilspyException("Language Server not started")
+    
+        # Get the symbol at the current position
+        symbols_result = await self.request_document_symbols(relative_file_path)
+        if not symbols_result or not symbols_result[0]:
+            return False
+        
+        all_symbols, root_symbols = symbols_result
+        
+        # Find the target symbol at the given position
+        target_symbol = self._find_symbol_at_position(all_symbols, line, column)
+        if not target_symbol or target_symbol.get("kind") != multilspy_types.SymbolKind.Class:
+            return False
+        
+        # Use the language-specific inheritance detection
+        return self._is_inheriting_from(relative_file_path, target_symbol, target_class_name)
     @property
     def cache_path(self) -> Path:
         """
@@ -2369,7 +2404,14 @@ class SyncLanguageServer:
             self.language_server.request_type_hierarchy_symbols(relative_file_path, line, column), self.loop
         ).result(timeout=self.timeout)
         return result
-
+    
+    def request_type_hierarchy(
+        self, relative_file_path: str, line: int, column: int, target_class_name: str
+    ) -> bool:
+        """Synchronous version of request_type_hierarchy."""
+        return asyncio.run_coroutine_threadsafe(
+            self.language_server.request_type_hierarchy(relative_file_path, line, column, target_class_name), self.loop
+        ).result(timeout=self.timeout)
 
     def retrieve_full_file_content(self, relative_file_path: str) -> str:
         """

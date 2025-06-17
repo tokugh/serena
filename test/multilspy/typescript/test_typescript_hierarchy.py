@@ -1,58 +1,15 @@
 import os
-
 import pytest
-
 from multilspy import SyncLanguageServer
 from multilspy.multilspy_config import Language
-from multilspy.multilspy_utils import SymbolUtils
 
 
-@pytest.mark.java
-class TestJavaLanguageServer:
-    @pytest.mark.parametrize("language_server", [Language.JAVA], indirect=True)
-    def test_find_symbol(self, language_server: SyncLanguageServer) -> None:
-        symbols = language_server.request_full_symbol_tree()
-        assert SymbolUtils.symbol_tree_contains_name(symbols, "Main"), "Main class not found in symbol tree"
-        assert SymbolUtils.symbol_tree_contains_name(symbols, "Utils"), "Utils class not found in symbol tree"
-        assert SymbolUtils.symbol_tree_contains_name(symbols, "Model"), "Model class not found in symbol tree"
-
-    @pytest.mark.parametrize("language_server", [Language.JAVA], indirect=True)
-    def test_find_referencing_symbols(self, language_server: SyncLanguageServer) -> None:
-        # Use correct Maven/Java file paths
-        file_path = os.path.join("src", "main", "java", "test_repo", "Utils.java")
-        refs = language_server.request_references(file_path, 4, 20)
-        assert any("Main.java" in ref.get("relativePath", "") for ref in refs), "Main should reference Utils.printHello"
-
-        # Dynamically determine the correct line/column for the 'Model' class name
-        file_path = os.path.join("src", "main", "java", "test_repo", "Model.java")
-        symbols = language_server.request_document_symbols(file_path)
-        model_symbol = None
-        for sym in symbols[0]:
-            if sym.get("name") == "Model" and sym.get("kind") == 5:  # 5 = Class
-                model_symbol = sym
-                break
-        assert model_symbol is not None, "Could not find 'Model' class symbol in Model.java"
-        # Use selectionRange if present, otherwise fall back to range
-        if "selectionRange" in model_symbol:
-            sel_start = model_symbol["selectionRange"]["start"]
-        else:
-            sel_start = model_symbol["range"]["start"]
-        refs = language_server.request_references(file_path, sel_start["line"], sel_start["character"])
-        assert any(
-            "Main.java" in ref.get("relativePath", "") for ref in refs
-        ), "Main should reference Model (tried all positions in selectionRange)"
-
-    @pytest.mark.parametrize("language_server", [Language.JAVA], indirect=True)
-    def test_overview_methods(self, language_server: SyncLanguageServer) -> None:
-        symbols = language_server.request_full_symbol_tree()
-        assert SymbolUtils.symbol_tree_contains_name(symbols, "Main"), "Main missing from overview"
-        assert SymbolUtils.symbol_tree_contains_name(symbols, "Utils"), "Utils missing from overview"
-        assert SymbolUtils.symbol_tree_contains_name(symbols, "Model"), "Model missing from overview"
-
-    @pytest.mark.parametrize("language_server", [Language.JAVA], indirect=True)
+@pytest.mark.typescript
+class TestTypeScriptTypeHierarchy:
+    @pytest.mark.parametrize("language_server", [Language.TYPESCRIPT], indirect=True)
     def test_request_type_hierarchy(self, language_server: SyncLanguageServer) -> None:
         # Test class inheritance: ChildClass extends BaseClass
-        child_file_path = os.path.join("src", "main", "java", "test_repo", "ChildClass.java")
+        child_file_path = "ChildClass.ts"
         symbols = language_server.request_document_symbols(child_file_path)
         child_class_symbol = None
         for sym in symbols[0]:
@@ -63,12 +20,15 @@ class TestJavaLanguageServer:
 
         # Test type hierarchy for ChildClass -> BaseClass
         hierarchy_result = language_server.request_type_hierarchy(
-            child_file_path, child_class_symbol["range"]["start"]["line"], child_class_symbol["range"]["start"]["character"], "BaseClass"
+            child_file_path, 
+            child_class_symbol["range"]["start"]["line"], 
+            child_class_symbol["range"]["start"]["character"], 
+            "BaseClass"
         )
-        assert hierarchy_result is True, "ChildClass should inherit from BaseClass"
+        assert hierarchy_result is True, "ChildClass should extend BaseClass"
 
         # Test interface implementation: ConcreteProcessor implements Processable
-        concrete_file_path = os.path.join("src", "main", "java", "test_repo", "ConcreteProcessor.java")
+        concrete_file_path = "ConcreteProcessor.ts"
         symbols = language_server.request_document_symbols(concrete_file_path)
         concrete_class_symbol = None
         for sym in symbols[0]:
@@ -96,7 +56,7 @@ class TestJavaLanguageServer:
         assert hierarchy_result is True, "ConcreteProcessor should extend BaseClass"
 
         # Test multiple interfaces: MultipleInterfaces implements Readable, Writable, Processable
-        multi_file_path = os.path.join("src", "main", "java", "test_repo", "MultipleInterfaces.java")
+        multi_file_path = "MultipleInterfaces.ts"
         symbols = language_server.request_document_symbols(multi_file_path)
         multi_class_symbol = None
         for sym in symbols[0]:
@@ -116,7 +76,7 @@ class TestJavaLanguageServer:
             assert hierarchy_result is True, f"MultipleInterfaces should implement {interface_name}"
 
         # Test negative case: BaseClass should not inherit from ChildClass
-        base_file_path = os.path.join("src", "main", "java", "test_repo", "BaseClass.java")
+        base_file_path = "BaseClass.ts"
         symbols = language_server.request_document_symbols(base_file_path)
         base_class_symbol = None
         for sym in symbols[0]:
@@ -126,6 +86,35 @@ class TestJavaLanguageServer:
         assert base_class_symbol is not None, "Could not find 'BaseClass' symbol"
 
         hierarchy_result = language_server.request_type_hierarchy(
-            base_file_path, base_class_symbol["range"]["start"]["line"], base_class_symbol["range"]["start"]["character"], "ChildClass"
+            base_file_path, 
+            base_class_symbol["range"]["start"]["line"], 
+            base_class_symbol["range"]["start"]["character"], 
+            "ChildClass"
         )
         assert hierarchy_result is False, "BaseClass should not inherit from ChildClass"
+
+    @pytest.mark.parametrize("language_server", [Language.TYPESCRIPT], indirect=True)  
+    def test_request_type_hierarchy_symbols(self, language_server: SyncLanguageServer) -> None:
+        """Test the type hierarchy symbols method that returns actual hierarchy information."""
+        base_file_path = "BaseClass.ts"
+        symbols = language_server.request_document_symbols(base_file_path)
+        base_class_symbol = None
+        for sym in symbols[0]:
+            if sym.get("name") == "BaseClass" and sym.get("kind") == 5:  # 5 = Class
+                base_class_symbol = sym
+                break
+        assert base_class_symbol is not None, "Could not find 'BaseClass' symbol"
+
+        # Test type hierarchy symbols
+        supertypes, subtypes = language_server.request_type_hierarchy_symbols(
+            base_file_path,
+            base_class_symbol["range"]["start"]["line"],
+            base_class_symbol["range"]["start"]["character"]
+        )
+
+        # Our fallback implementation should find subclasses
+        subtype_names = {sub["name"] for sub in subtypes}
+        expected_subtypes = {"ChildClass", "ConcreteProcessor"}
+        
+        # At least some of the expected subtypes should be found
+        assert len(subtype_names.intersection(expected_subtypes)) > 0, f"Expected to find some of {expected_subtypes}, but got {subtype_names}"
