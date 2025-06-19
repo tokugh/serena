@@ -608,7 +608,7 @@ class SymbolManager:
 
             signature = None
             docstring = None
-
+            
             # Try to get signature help first
             signature_help = self._lang_server.request_signature_help(relative_path, line, column)
             if signature_help and signature_help.get("signatures"):
@@ -649,20 +649,65 @@ class SymbolManager:
                             hover_text = "\n".join(text_parts)
 
                     if hover_text:
-                        # Try to extract docstring from hover text
-                        # Skip code blocks and get the descriptive text
+                        # Extract both signature and docstring from hover text
                         lines = hover_text.split("\n")
                         doc_lines = []
                         in_code_block = False
+                        signature_lines = []
+                        collecting_signature = False
 
                         for text_line in lines:
+                            original_line = text_line
                             text_line = text_line.strip()
+                            
                             if text_line.startswith("```"):
                                 in_code_block = not in_code_block
+                                # When exiting code block and we were collecting, finalize signature
+                                if not in_code_block and collecting_signature and signature_lines:
+                                    if not signature:
+                                        # Join all lines with proper spacing for multiline signatures
+                                        signature = "\n".join(signature_lines)
+                                collecting_signature = False
                                 continue
-                            if not in_code_block and text_line and not text_line.startswith("def ") and not text_line.startswith("class "):
-                                doc_lines.append(text_line)
+                            
+                            if in_code_block:
+                                # Check if this line starts a signature we're interested in
+                                if not collecting_signature:
+                                    # Clean up prefixes to check for signature start
+                                    clean_line = text_line
+                                    if clean_line.startswith("(method) "):
+                                        clean_line = clean_line[9:]
+                                    elif clean_line.startswith("(function) "):
+                                        clean_line = clean_line[11:]
+                                    elif clean_line.startswith("(class) "):
+                                        clean_line = clean_line[8:]
+                                    
+                                    # Check if this is a signature line we want
+                                    if (clean_line.startswith("def ") and ("__init__" in clean_line or symbol.name.lower() in clean_line.lower())) or \
+                                       (clean_line.startswith("class ") and symbol.name in clean_line):
+                                        collecting_signature = True
+                                        # Start collecting signature with cleaned line
+                                        signature_lines = [clean_line]
+                                
+                                # If we're collecting a signature, continue until we find the end
+                                elif collecting_signature:
+                                    # Add line to signature (preserve indentation for multiline)
+                                    if text_line:  # Only add non-empty lines
+                                        signature_lines.append(text_line)
+                                    
+                                    # Check if signature is complete 
+                                    if text_line.endswith(") -> None") or text_line.endswith("):") or \
+                                       (text_line.endswith(")") and "def " in signature_lines[0]):
+                                        collecting_signature = False
+                                        # Finalize signature
+                                        if not signature:
+                                            signature = "\n".join(signature_lines)
+                            else:
+                                # Collect non-code lines for docstring
+                                if text_line and not text_line.startswith("def ") and not text_line.startswith("class "):
+                                    doc_lines.append(text_line)
 
+                        # Extract docstring
                         potential_docstring = "\n".join(doc_lines).strip()
                         if len(potential_docstring) > len(docstring or ""):
                             docstring = potential_docstring

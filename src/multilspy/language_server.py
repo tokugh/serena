@@ -1187,36 +1187,36 @@ class LanguageServer:
 
         return multilspy_types.Hover(**response)
     
-        async def request_signature_help(self, relative_file_path: str, line: int, column: int) -> Union[multilspy_types.SignatureHelp, None]:
-            """
-            Raise a [textDocument/signatureHelp](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_signatureHelp) request to the Language Server
-            to find the signature help information at the given line and column in the given file. Wait for the response and return the result.
-    
-            :param relative_file_path: The relative path of the file that has the signature help information
-            :param line: The line number of the symbol
-            :param column: The column number of the symbol
-    
-            :return: SignatureHelp object or None
-            """
-            with self.open_file(relative_file_path):
-                response = await self.server.send.signature_help(
-                    {
-                        "textDocument": {
-                            "uri": pathlib.Path(os.path.join(self.repository_root_path, relative_file_path)).as_uri()
-                        },
-                        "position": {
-                            "line": line,
-                            "character": column,
-                        },
-                    }
-                )
-            
-            if response is None:
-                return None
-    
-            assert isinstance(response, dict)
-    
-            return multilspy_types.SignatureHelp(**response)
+    async def request_signature_help(self, relative_file_path: str, line: int, column: int) -> Union[multilspy_types.SignatureHelp, None]:
+        """
+        Raise a [textDocument/signatureHelp](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_signatureHelp) request to the Language Server
+        to find the signature help information at the given line and column in the given file. Wait for the response and return the result.
+
+        :param relative_file_path: The relative path of the file that has the signature help information
+        :param line: The line number of the symbol
+        :param column: The column number of the symbol
+
+        :return: SignatureHelp object or None
+        """
+        with self.open_file(relative_file_path):
+            response = await self.server.send.signature_help(
+                {
+                    "textDocument": {
+                        "uri": pathlib.Path(os.path.join(self.repository_root_path, relative_file_path)).as_uri()
+                    },
+                    "position": {
+                        "line": line,
+                        "character": column,
+                    },
+                }
+            )
+
+        if response is None:
+            return None
+
+        assert isinstance(response, dict)
+
+        return multilspy_types.SignatureHelp(**response)
     # ----------------------------- FROM HERE ON MODIFICATIONS BY MISCHA --------------------
 
     def retrieve_symbol_body(self, symbol: multilspy_types.UnifiedSymbolInformation | LSPTypes.DocumentSymbol | LSPTypes.SymbolInformation) -> str:

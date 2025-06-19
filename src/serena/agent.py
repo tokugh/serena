@@ -685,6 +685,9 @@ def index_project(project: str, log_level: str = "INFO") -> None:
 
 
 class SerenaAgent:
+    """
+    The main Serena agent class that manages the agent's configuration, tools, and project context.
+    """
     def __init__(
         self,
         project: str | None = None,
