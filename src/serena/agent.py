@@ -688,6 +688,7 @@ class SerenaAgent:
     """
     The main Serena agent class that manages the agent's configuration, tools, and project context.
     """
+
     def __init__(
         self,
         project: str | None = None,
