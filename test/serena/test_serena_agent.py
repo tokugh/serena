@@ -304,7 +304,7 @@ class TestSerenaAgent:
             pytest.param(
                 Language.PYTHON,
                 "setup_logging",
-                'def setup_logging(level: str = "INFO") -> logging.Logger',
+                'def setup_logging(level: str = "INFO") -> Logger',
                 "Set up and return a configured logger",
                 marks=pytest.mark.python,
             ),
@@ -339,8 +339,18 @@ class TestSerenaAgent:
         agent = serena_agent
         find_symbol_tool = agent.get_tool(FindSymbolTool)
 
+        # For Java and Rust, we need substring matching since method names include parameter types
+        # e.g., Java: "factorial(int)" instead of just "factorial"
+        active_project = agent.get_active_project()
+        assert active_project is not None, "Expected an active project"
+        language = active_project.project_config.language
+
+        use_substring_matching = language in [Language.JAVA, Language.RUST]
+
         # Test with signature and docstring enabled
-        result = find_symbol_tool.apply_ex(name_path=symbol_name, include_signature=True, include_docstring=True)
+        result = find_symbol_tool.apply_ex(
+            name_path=symbol_name, include_signature=True, include_docstring=True, substring_matching=use_substring_matching
+        )
 
         symbols = json.loads(result)
         assert len(symbols) > 0, f"Expected to find symbol {symbol_name}"
