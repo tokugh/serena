@@ -183,6 +183,9 @@ class TypeScriptLanguageServer(SolidLanguageServer):
             return
 
         def window_log_message(msg):
+            message_text = msg.get("message", "")
+            if "Using Typescript version" in message_text:
+                self.server_ready.set()
             self.logger.log(f"LSP: window/logMessage: {msg}", logging.INFO)
             
         
@@ -191,7 +194,7 @@ class TypeScriptLanguageServer(SolidLanguageServer):
             Also listen for experimental/serverStatus as a backup signal
             """
             if params.get("quiescent") == True:
-                self.server_ready.set()
+                # self.server_ready.set()
                 self.completions_available.set()
 
         self.server.on_request("client/registerCapability", register_capability_handler)
@@ -220,7 +223,7 @@ class TypeScriptLanguageServer(SolidLanguageServer):
         }
 
         self.server.notify.initialized({})
-        if self.server_ready.wait(timeout=1.0):
+        if self.server_ready.wait(timeout=10.0):
             self.logger.log("TypeScript server is ready", logging.INFO)
         else:
             self.logger.log("Timeout waiting for TypeScript server to become ready, proceeding anyway", logging.INFO)
