@@ -124,6 +124,26 @@ def index_project(project: str, log_level: str = "INFO") -> None:
     print(f"Symbols saved to {ls.cache_path}")
 
 
+@click.command()
+@click.argument("project", type=click.Path(exists=True), required=False, default=os.getcwd())
+@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]), default="WARNING")
+def print_system_prompt(project: str, log_level: str = "WARNING") -> None:
+    """
+    Print the system prompt for the current project using InitialInstructionsTool.
+
+    :param project: the project to get the system prompt for. By default, the current working directory is used.
+    """
+    from serena.tools.workflow_tools import InitialInstructionsTool
+
+    log_level_int = logging.getLevelNamesMapping()[log_level.upper()]
+    logging.getLogger().setLevel(log_level_int)
+
+    agent = SerenaAgent(project=os.path.abspath(project))
+    initial_instructions_tool = agent.get_tool(InitialInstructionsTool)
+    system_prompt = initial_instructions_tool.apply()
+    print(system_prompt)
+
+
 class SerenaAgent:
     def __init__(
         self,
