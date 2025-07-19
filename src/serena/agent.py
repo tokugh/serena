@@ -179,7 +179,45 @@ class SerenaAgent:
         tool_inclusion_definitions = [self.serena_config, self._context]
         if self.serena_config.jetbrains:
             tool_inclusion_definitions.append(SerenaAgentMode.from_name_internal("jetbrains"))
+
+        # If we're in ide-assistant mode and a project is passed, exclude project-configured tools early
+        project_excluded_tools: set[str] = set()
+        if self._context.name == "ide-assistant" and project is not None:
+            # Get excluded tools from project config if it exists
+            try:
+                project_instance = self.serena_config.get_project(project)
+                if project_instance is None and os.path.isdir(project):
+                    # Try to load project config directly from the project path
+                    from serena.config.serena_config import ProjectConfig
+
+                    project_config_path = os.path.join(project, ".serena", "project.yml")
+                    if os.path.exists(project_config_path):
+                        project_config = ProjectConfig.load(project_config_path)
+                        project_excluded_tools.update(project_config.excluded_tools)
+                else:
+                    if project_instance is not None:
+                        project_excluded_tools.update(project_instance.project_config.excluded_tools)
+
+                # Always exclude activate_project tool in ide-assistant mode with project
+                project_excluded_tools.add("activate_project")
+            except Exception as e:
+                log.warning(f"Could not load project config for early tool exclusion: {e}")
+
         self._base_tool_set = ToolSet.default().apply(*tool_inclusion_definitions)
+
+        # Apply project-level exclusions for ide-assistant mode
+        if project_excluded_tools:
+            log.info(f"Excluding project-configured tools in ide-assistant mode: {', '.join(sorted(project_excluded_tools))}")
+            # Create a temporary tool inclusion definition for project exclusions
+            from serena.config.serena_config import ToolInclusionDefinition
+
+            class ProjectExclusionDefinition(ToolInclusionDefinition):
+                def __init__(self, excluded_tools: set[str]):
+                    super().__init__(excluded_tools=excluded_tools, included_optional_tools=[])
+
+            project_exclusion = ProjectExclusionDefinition(project_excluded_tools)
+            self._base_tool_set = self._base_tool_set.apply(project_exclusion)
+
         self._exposed_tools = {tc: t for tc, t in self._all_tools.items() if self._base_tool_set.includes_name(t.get_name())}
         log.info(f"Number of exposed tools: {len(self._exposed_tools)}")
 
