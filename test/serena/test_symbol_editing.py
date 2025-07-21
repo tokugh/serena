@@ -14,8 +14,8 @@ from typing import Literal, NamedTuple
 import pytest
 
 from serena.code_editor import CodeEditor, LanguageServerCodeEditor
-from solidlsp.ls_config import Language
 from serena.symbol import LanguageServerSymbolRetriever
+from solidlsp.ls_config import Language
 from test.conftest import create_ls, get_repo_path
 
 pytestmark = pytest.mark.snapshot
