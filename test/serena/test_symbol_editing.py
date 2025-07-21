@@ -15,7 +15,7 @@ import pytest
 
 from serena.code_editor import CodeEditor, LanguageServerCodeEditor
 from solidlsp.ls_config import Language
-from src.serena.symbol import LanguageServerSymbolRetriever
+from serena.symbol import LanguageServerSymbolRetriever
 from test.conftest import create_ls, get_repo_path
 
 pytestmark = pytest.mark.snapshot

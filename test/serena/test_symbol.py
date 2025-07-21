@@ -1,6 +1,6 @@
 import pytest
 
-from src.serena.symbol import LanguageServerSymbol
+from serena.symbol import LanguageServerSymbol
 
 
 class TestSymbolNameMatching:

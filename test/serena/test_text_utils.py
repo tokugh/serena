@@ -479,6 +479,6 @@ class TestGlobMatch:
     )
     def test_glob_match(self, pattern, path, expected):
         """Test glob_match function with various patterns."""
-        from src.serena.text_utils import glob_match
+        from serena.text_utils import glob_match
 
         assert glob_match(pattern, path) == expected
