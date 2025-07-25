@@ -13,6 +13,7 @@ from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_logger import LanguageServerLogger
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
+from solidlsp.settings import SolidLSPSettings
 
 from .common import RuntimeDependency, RuntimeDependencyCollection
 
@@ -24,7 +25,9 @@ class ClangdLanguageServer(SolidLanguageServer):
     Also make sure compile_commands.json is created at root of the source directory. Check clangd test case for example.
     """
 
-    def __init__(self, config: LanguageServerConfig, logger: LanguageServerLogger, repository_root_path: str):
+    def __init__(
+        self, config: LanguageServerConfig, logger: LanguageServerLogger, repository_root_path: str, solidlsp_settings: SolidLSPSettings
+    ):
         """
         Creates a ClangdLanguageServer instance. This class is not meant to be instantiated directly. Use LanguageServer.create() instead.
         """
@@ -35,6 +38,7 @@ class ClangdLanguageServer(SolidLanguageServer):
             repository_root_path,
             ProcessLaunchInfo(cmd=clangd_executable_path, cwd=repository_root_path),
             "cpp",
+            solidlsp_settings,
         )
         self.server_ready = threading.Event()
         self.service_ready_event = threading.Event()
