@@ -186,11 +186,11 @@ class ReplaceRegexTool(Tool, ToolMarkerCanEdit):
         self.project.validate_relative_path(relative_path)
         with EditedFileContext(relative_path, self.agent) as context:
             original_content = context.get_original_content()
-            
+
             # Process the replacement string to handle escape sequences properly
             # This ensures that escape sequences are preserved as-is in the output and not
             # interpreted as literal characters (e.g., \n should remain as \n, not become a newline)
-            # 
+            #
             # The issue was that escape sequences in replacement strings were being interpreted
             # literally when they should be preserved as-is. For example, '\n' was becoming a literal
             # newline character, breaking string literals across multiple lines.
@@ -207,58 +207,58 @@ class ReplaceRegexTool(Tool, ToolMarkerCanEdit):
                 i = 0
                 while i < len(s):
                     # Handle literal newlines - convert to escaped newlines
-                    if s[i] == '\n':
+                    if s[i] == "\n":
                         # This is a literal newline, convert it to an escaped newline
-                        parts.append('\\n')
+                        parts.append("\\n")
                         i += 1
                     # Handle backreferences (\1, \2, etc.) - preserve these as-is
-                    elif s[i] == '\\' and i + 1 < len(s) and s[i+1].isdigit():
+                    elif s[i] == "\\" and i + 1 < len(s) and s[i + 1].isdigit():
                         # This is a backreference, keep it as is
-                        parts.append(s[i:i+2])
+                        parts.append(s[i : i + 2])
                         i += 2
                     # Handle escape sequences (\n, \t, etc.) - double-escape these
-                    elif s[i] == '\\' and i + 1 < len(s) and s[i+1] in 'nrtbfv':
+                    elif s[i] == "\\" and i + 1 < len(s) and s[i + 1] in "nrtbfv":
                         # This is an escape sequence, double-escape it
-                        parts.append('\\' + s[i:i+2])
+                        parts.append("\\" + s[i : i + 2])
                         i += 2
                     # Handle hex escape sequences (\x00, etc.)
-                    elif s[i] == '\\' and i + 3 < len(s) and s[i+1] == 'x' and s[i+2:i+4].isalnum():
+                    elif s[i] == "\\" and i + 3 < len(s) and s[i + 1] == "x" and s[i + 2 : i + 4].isalnum():
                         # This is a hex escape sequence, double-escape it
-                        parts.append('\\' + s[i:i+4])
+                        parts.append("\\" + s[i : i + 4])
                         i += 4
                     # Handle octal escape sequences (\000, etc.)
-                    elif s[i] == '\\' and i + 1 < len(s) and s[i+1] in '01234567':
+                    elif s[i] == "\\" and i + 1 < len(s) and s[i + 1] in "01234567":
                         # Determine the length of the octal sequence (1-3 digits)
                         j = i + 2
-                        while j < len(s) and j < i + 4 and s[j] in '01234567':
+                        while j < len(s) and j < i + 4 and s[j] in "01234567":
                             j += 1
                         # This is an octal escape sequence, double-escape it
-                        parts.append('\\' + s[i:j])
+                        parts.append("\\" + s[i:j])
                         i = j
                     # Handle escaped backslashes (\\) - preserve these as-is
-                    elif s[i] == '\\' and i + 1 < len(s) and s[i+1] == '\\':
-                        parts.append(s[i:i+2])
+                    elif s[i] == "\\" and i + 1 < len(s) and s[i + 1] == "\\":
+                        parts.append(s[i : i + 2])
                         i += 2
                     # Handle other backslashes - escape them
-                    elif s[i] == '\\':
-                        parts.append('\\\\')
+                    elif s[i] == "\\":
+                        parts.append("\\\\")
                         i += 1
                     # Regular character
                     else:
                         parts.append(s[i])
                         i += 1
-                
-                return ''.join(parts)
-            
+
+                return "".join(parts)
+
             # First, handle any literal newlines in the replacement string
             # This is necessary because the escape_backslashes function might not catch all cases
             # of literal newlines, especially if they're in a string that's passed directly
             # rather than as a raw string.
-            repl_with_escaped_newlines = repl.replace('\n', '\\n')
-            
+            repl_with_escaped_newlines = repl.replace("\n", "\\n")
+
             # Then process the string with the escape_backslashes function to handle other escape sequences
             processed_repl = escape_backslashes(repl_with_escaped_newlines)
-            
+
             updated_content, n = re.subn(regex, processed_repl, original_content, flags=re.DOTALL | re.MULTILINE)
             if n == 0:
                 return f"Error: No matches found for regex '{regex}' in file '{relative_path}'."
