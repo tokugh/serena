@@ -187,72 +187,26 @@ class ReplaceRegexTool(Tool, ToolMarkerCanEdit):
         with EditedFileContext(relative_path, self.agent) as context:
             original_content = context.get_original_content()
 
-            # Process the replacement string to handle escape sequences properly
-            # This ensures that escape sequences like \n, \t in replacement strings
-            # are properly escaped so they don't get interpreted as literal characters
+            # Simple fix for escape sequence handling in regex replacements
+            # The issue: re.subn() interprets escape sequences in replacement strings
+            # Solution: Double backslashes except for backreferences (\1, \2, etc.)
             def process_replacement_string(s: str) -> str:
-                # Handle escape sequences in replacement strings by escaping them
-                # so they are preserved as literal escape sequences in the output
-                # This is a conservative approach that only escapes what's necessary
                 result = []
                 i = 0
                 while i < len(s):
-                    # Handle backslash sequences
                     if s[i] == "\\" and i + 1 < len(s):
                         next_char = s[i + 1]
-                        # Preserve backreferences (\1, \2, etc.) as-is for regex substitution
+                        # Preserve backreferences (\1, \2, etc.) for regex functionality
                         if next_char.isdigit():
                             result.append(s[i : i + 2])
                             i += 2
-                        # For escape sequences like \n, \t - double-escape them only if needed
-                        elif next_char in "nrtbfv":
-                            # Double-escape to preserve the backslash in output
-                            result.append("\\\\" + next_char)
-                            i += 2
-                        # Handle sequences starting with \\
-                        elif next_char == "\\":
-                            # Look ahead for \\n, \\t etc (already escaped sequences)
-                            if i + 2 < len(s) and s[i + 2] in "nrtbfv":
-                                # This is \\n - double-escape the first backslash to preserve \\n
-                                result.append("\\\\\\\\" + s[i + 2])
-                                i += 3
-                            # Look ahead for \\\\n, \\\\t etc (double-escaped sequences)
-                            elif (
-                                i + 3 < len(s)
-                                and s[i + 2] == "\\"
-                                and i + 4 < len(s)
-                                and s[i + 3] == "\\"
-                                and i + 4 < len(s)
-                                and s[i + 4] in "nrtbfv"
-                            ):
-                                # This is \\\\n - should remain as \\\\n
-                                result.append("\\\\\\\\\\\\\\\\" + s[i + 4])
-                                i += 5
-                            # Regular double backslashes (\\), double them
-                            else:
-                                result.append("\\\\\\\\")
-                                i += 2
-                        # For other escaped characters, preserve the escape
                         else:
-                            result.append(s[i : i + 2])
-                            i += 2
-                    # Handle literal newline characters (only in string literals, not raw strings)
-                    elif s[i] == "\n":
-                        # Convert literal newlines to escaped form
-                        result.append("\\\\n")
-                        i += 1
-                    # Handle literal tab characters
-                    elif s[i] == "\t":
-                        result.append("\\\\t")
-                        i += 1
-                    # Handle literal carriage return characters
-                    elif s[i] == "\r":
-                        result.append("\\\\r")
-                        i += 1
+                            # Double the backslash to prevent re.subn() from interpreting it
+                            result.append("\\\\")
+                            i += 1
                     else:
                         result.append(s[i])
                         i += 1
-
                 return "".join(result)
 
             processed_repl = process_replacement_string(repl)
