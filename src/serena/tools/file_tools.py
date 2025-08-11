@@ -188,76 +188,74 @@ class ReplaceRegexTool(Tool, ToolMarkerCanEdit):
             original_content = context.get_original_content()
 
             # Process the replacement string to handle escape sequences properly
-            # This ensures that escape sequences are preserved as-is in the output and not
-            # interpreted as literal characters (e.g., \n should remain as \n, not become a newline)
-            #
-            # The issue was that escape sequences in replacement strings were being interpreted
-            # literally when they should be preserved as-is. For example, '\n' was becoming a literal
-            # newline character, breaking string literals across multiple lines.
-            #
-            # This fix handles all types of escape sequences:
-            # - Backreferences (\1, \2, etc.) are preserved as-is
-            # - Common escape sequences (\n, \t, etc.) are double-escaped to prevent interpretation
-            # - Hex and octal escape sequences are double-escaped
-            # - Escaped backslashes (\\) are preserved as-is
-            # - Other backslashes are escaped
-            def escape_backslashes(s):
-                # Create a list to store parts of the string (either escaped sequences or regular text)
-                parts = []
+            # This ensures that escape sequences like \n, \t in replacement strings
+            # are properly escaped so they don't get interpreted as literal characters
+            def process_replacement_string(s: str) -> str:
+                # Handle escape sequences in replacement strings by escaping them
+                # so they are preserved as literal escape sequences in the output
+                # This is a conservative approach that only escapes what's necessary
+                result = []
                 i = 0
                 while i < len(s):
-                    # Handle literal newlines - convert to escaped newlines
-                    if s[i] == "\n":
-                        # This is a literal newline, convert it to an escaped newline
-                        parts.append("\\n")
+                    # Handle backslash sequences
+                    if s[i] == "\\" and i + 1 < len(s):
+                        next_char = s[i + 1]
+                        # Preserve backreferences (\1, \2, etc.) as-is for regex substitution
+                        if next_char.isdigit():
+                            result.append(s[i : i + 2])
+                            i += 2
+                        # For escape sequences like \n, \t - double-escape them only if needed
+                        elif next_char in "nrtbfv":
+                            # Double-escape to preserve the backslash in output
+                            result.append("\\\\" + next_char)
+                            i += 2
+                        # Handle sequences starting with \\
+                        elif next_char == "\\":
+                            # Look ahead for \\n, \\t etc (already escaped sequences)
+                            if i + 2 < len(s) and s[i + 2] in "nrtbfv":
+                                # This is \\n - double-escape the first backslash to preserve \\n
+                                result.append("\\\\\\\\" + s[i + 2])
+                                i += 3
+                            # Look ahead for \\\\n, \\\\t etc (double-escaped sequences)
+                            elif (
+                                i + 3 < len(s)
+                                and s[i + 2] == "\\"
+                                and i + 4 < len(s)
+                                and s[i + 3] == "\\"
+                                and i + 4 < len(s)
+                                and s[i + 4] in "nrtbfv"
+                            ):
+                                # This is \\\\n - should remain as \\\\n
+                                result.append("\\\\\\\\\\\\\\\\" + s[i + 4])
+                                i += 5
+                            # Regular double backslashes (\\), double them
+                            else:
+                                result.append("\\\\\\\\")
+                                i += 2
+                        # For other escaped characters, preserve the escape
+                        else:
+                            result.append(s[i : i + 2])
+                            i += 2
+                    # Handle literal newline characters (only in string literals, not raw strings)
+                    elif s[i] == "\n":
+                        # Convert literal newlines to escaped form
+                        result.append("\\\\n")
                         i += 1
-                    # Handle backreferences (\1, \2, etc.) - preserve these as-is
-                    elif s[i] == "\\" and i + 1 < len(s) and s[i + 1].isdigit():
-                        # This is a backreference, keep it as is
-                        parts.append(s[i : i + 2])
-                        i += 2
-                    # Handle escape sequences (\n, \t, etc.) - double-escape these
-                    elif s[i] == "\\" and i + 1 < len(s) and s[i + 1] in "nrtbfv":
-                        # This is an escape sequence, double-escape it
-                        parts.append("\\" + s[i : i + 2])
-                        i += 2
-                    # Handle hex escape sequences (\x00, etc.)
-                    elif s[i] == "\\" and i + 3 < len(s) and s[i + 1] == "x" and s[i + 2 : i + 4].isalnum():
-                        # This is a hex escape sequence, double-escape it
-                        parts.append("\\" + s[i : i + 4])
-                        i += 4
-                    # Handle octal escape sequences (\000, etc.)
-                    elif s[i] == "\\" and i + 1 < len(s) and s[i + 1] in "01234567":
-                        # Determine the length of the octal sequence (1-3 digits)
-                        j = i + 2
-                        while j < len(s) and j < i + 4 and s[j] in "01234567":
-                            j += 1
-                        # This is an octal escape sequence, double-escape it
-                        parts.append("\\" + s[i:j])
-                        i = j
-                    # Handle escaped backslashes (\\) - preserve these as-is
-                    elif s[i] == "\\" and i + 1 < len(s) and s[i + 1] == "\\":
-                        parts.append(s[i : i + 2])
-                        i += 2
-                    # Handle other backslashes - escape them
-                    elif s[i] == "\\":
-                        parts.append("\\\\")
+                    # Handle literal tab characters
+                    elif s[i] == "\t":
+                        result.append("\\\\t")
                         i += 1
-                    # Regular character
+                    # Handle literal carriage return characters
+                    elif s[i] == "\r":
+                        result.append("\\\\r")
+                        i += 1
                     else:
-                        parts.append(s[i])
+                        result.append(s[i])
                         i += 1
 
-                return "".join(parts)
+                return "".join(result)
 
-            # First, handle any literal newlines in the replacement string
-            # This is necessary because the escape_backslashes function might not catch all cases
-            # of literal newlines, especially if they're in a string that's passed directly
-            # rather than as a raw string.
-            repl_with_escaped_newlines = repl.replace("\n", "\\n")
-
-            # Then process the string with the escape_backslashes function to handle other escape sequences
-            processed_repl = escape_backslashes(repl_with_escaped_newlines)
+            processed_repl = process_replacement_string(repl)
 
             updated_content, n = re.subn(regex, processed_repl, original_content, flags=re.DOTALL | re.MULTILINE)
             if n == 0:
