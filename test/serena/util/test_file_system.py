@@ -576,6 +576,98 @@ src/*.o
         parser.reload()
         assert not parser.should_ignore("test.log")
         assert parser.should_ignore("test.tmp")
+        
+    def test_anchored_patterns_in_subdirectory(self):
+        """Test anchored patterns in subdirectory .gitignore files."""
+        test_dir = self.repo_path / "test_anchored_subdirectory"
+        test_dir.mkdir()
+        
+        # Create directory structure
+        foo_dir = test_dir / "foo"
+        foo_dir.mkdir()
+        (foo_dir / "bar").mkdir()
+        
+        # Create test files
+        (foo_dir / "foo.txt").touch()
+        (foo_dir / "bar" / "foo.txt").touch()
+        (test_dir / "foo.txt").touch()
+        
+        # Create .gitignore in foo/ with anchored pattern
+        gitignore = foo_dir / ".gitignore"
+        gitignore.write_text("/foo.txt")
+        
+        parser = GitignoreParser(str(test_dir))
+        
+        # Anchored pattern /foo.txt in foo/.gitignore should only match foo/foo.txt
+        assert parser.should_ignore("foo/foo.txt")
+        # Should NOT match foo/bar/foo.txt
+        assert not parser.should_ignore("foo/bar/foo.txt")
+        # Should NOT match /foo.txt
+        assert not parser.should_ignore("foo.txt")
+        
+    def test_double_star_patterns_in_subdirectory(self):
+        """Test **/ patterns in subdirectory .gitignore files."""
+        test_dir = self.repo_path / "test_double_star_subdirectory"
+        test_dir.mkdir()
+        
+        # Create directory structure
+        foo_dir = test_dir / "foo"
+        foo_dir.mkdir()
+        (foo_dir / "bar").mkdir()
+        (foo_dir / "bar" / "baz").mkdir()
+        
+        # Create test files
+        (foo_dir / "foo.txt").touch()
+        (foo_dir / "bar" / "foo.txt").touch()
+        (foo_dir / "bar" / "baz" / "foo.txt").touch()
+        (test_dir / "foo.txt").touch()
+        
+        # Create .gitignore in foo/ with **/ pattern
+        gitignore = foo_dir / ".gitignore"
+        gitignore.write_text("**/foo.txt")
+        
+        parser = GitignoreParser(str(test_dir))
+        
+        # **/foo.txt in foo/.gitignore should match foo/foo.txt
+        assert parser.should_ignore("foo/foo.txt")
+        # Should match foo/bar/foo.txt
+        assert parser.should_ignore("foo/bar/foo.txt")
+        # Should match foo/bar/baz/foo.txt
+        assert parser.should_ignore("foo/bar/baz/foo.txt")
+        # Should NOT match /foo.txt
+        assert not parser.should_ignore("foo.txt")
+        
+    def test_slash_double_star_patterns_in_subdirectory(self):
+        """Test /**/ patterns in subdirectory .gitignore files."""
+        test_dir = self.repo_path / "test_slash_double_star_subdirectory"
+        test_dir.mkdir()
+        
+        # Create directory structure
+        foo_dir = test_dir / "foo"
+        foo_dir.mkdir()
+        (foo_dir / "bar").mkdir()
+        (foo_dir / "bar" / "baz").mkdir()
+        
+        # Create test files
+        (foo_dir / "foo.txt").touch()
+        (foo_dir / "bar" / "foo.txt").touch()
+        (foo_dir / "bar" / "baz" / "foo.txt").touch()
+        (test_dir / "foo.txt").touch()
+        
+        # Create .gitignore in foo/ with /**/ pattern
+        gitignore = foo_dir / ".gitignore"
+        gitignore.write_text("/**/foo.txt")
+        
+        parser = GitignoreParser(str(test_dir))
+        
+        # /**/foo.txt in foo/.gitignore should match foo/foo.txt
+        assert parser.should_ignore("foo/foo.txt")
+        # Should match foo/bar/foo.txt
+        assert parser.should_ignore("foo/bar/foo.txt")
+        # Should match foo/bar/baz/foo.txt
+        assert parser.should_ignore("foo/bar/baz/foo.txt")
+        # Should NOT match /foo.txt
+        assert not parser.should_ignore("foo.txt")
 
     def test_gitignore_spec_matches(self):
         """Test GitignoreSpec.matches method."""

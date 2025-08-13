@@ -1,0 +1,17 @@
+--- src/serena/util/file_system.py	(revision Before)
++++ src/serena/util/file_system.py	(revision After)
+@@ -221,11 +221,14 @@
+                 if is_anchored:
+                     # Anchored patterns are relative to the gitignore directory
+                     # and should only match files directly in that directory
++                    # For /foo.txt in foo/.gitignore, it should only match foo/foo.txt, not foo/bar/foo.txt
+                     adjusted_pattern = os.path.join(rel_dir, line)
+                 else:
+                     # Non-anchored patterns can match anywhere below the gitignore directory
+                     if line.startswith("**/"):
+                         # For **/ patterns, restrict to the gitignore directory and below
++                        # For **/foo.txt in foo/.gitignore, it should match foo/foo.txt, foo/bar/foo.txt, 
++                        # but not /foo.txt
+                         adjusted_pattern = os.path.join(rel_dir, line)
+                     else:
+                         # Add the directory prefix but also allow matching in subdirectories
