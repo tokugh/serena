@@ -167,6 +167,8 @@ class ProjectConfig(ToolInclusionDefinition, ToStringMixin):
     ignore_all_files_in_gitignore: bool = True
     initial_prompt: str = ""
     encoding: str = DEFAULT_ENCODING
+    ls_specifics: dict = field(default_factory=dict)
+    """Advanced configuration option allowing to configure language server implementation specific options, see SolidLSPSettings for more info."""
 
     SERENA_DEFAULT_PROJECT_FILE = "project.yml"
 
@@ -245,6 +247,7 @@ class ProjectConfig(ToolInclusionDefinition, ToStringMixin):
             ignore_all_files_in_gitignore=data.get("ignore_all_files_in_gitignore", True),
             initial_prompt=data.get("initial_prompt", ""),
             encoding=data.get("encoding", DEFAULT_ENCODING),
+            ls_specifics=data.get("ls_specifics", {}),
         )
 
     @classmethod
