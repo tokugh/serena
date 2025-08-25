@@ -167,8 +167,6 @@ class ProjectConfig(ToolInclusionDefinition, ToStringMixin):
     ignore_all_files_in_gitignore: bool = True
     initial_prompt: str = ""
     encoding: str = DEFAULT_ENCODING
-    ls_specifics: dict = field(default_factory=dict)
-    """Advanced configuration option allowing to configure language server implementation specific options, see SolidLSPSettings for more info."""
 
     SERENA_DEFAULT_PROJECT_FILE = "project.yml"
 
@@ -247,7 +245,6 @@ class ProjectConfig(ToolInclusionDefinition, ToStringMixin):
             ignore_all_files_in_gitignore=data.get("ignore_all_files_in_gitignore", True),
             initial_prompt=data.get("initial_prompt", ""),
             encoding=data.get("encoding", DEFAULT_ENCODING),
-            ls_specifics=data.get("ls_specifics", {}),
         )
 
     @classmethod
@@ -353,6 +350,8 @@ class SerenaConfig(ToolInclusionDefinition, ToStringMixin):
     on the first run, which can take some time and require internet access. Others, like the Anthropic ones, may require an API key
     and rate limits may apply.
     """
+    ls_specifics: dict = field(default_factory=dict)
+    """Advanced configuration option allowing to configure language server implementation specific options, see SolidLSPSettings for more info."""
 
     CONFIG_FILE = "serena_config.yml"
     CONFIG_FILE_DOCKER = "serena_config.docker.yml"  # Docker-specific config file; auto-generated if missing, mounted via docker-compose for user customization
@@ -456,6 +455,7 @@ class SerenaConfig(ToolInclusionDefinition, ToStringMixin):
         instance.token_count_estimator = loaded_commented_yaml.get(
             "token_count_estimator", RegisteredTokenCountEstimator.TIKTOKEN_GPT4O.name
         )
+        instance.ls_specifics = loaded_commented_yaml.get("ls_specifics", {})
 
         # re-save the configuration file if any migrations were performed
         if num_project_migrations > 0:
