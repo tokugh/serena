@@ -217,6 +217,10 @@ class Language(str, Enum):
                 from solidlsp.language_servers.lua_ls import LuaLanguageServer
 
                 return LuaLanguageServer
+            case self.ERLANG:
+                from solidlsp.language_servers.erlang_language_server import ErlangLanguageServer
+
+                return ErlangLanguageServer
             case _:
                 raise ValueError(f"Unhandled language: {self}")
 
