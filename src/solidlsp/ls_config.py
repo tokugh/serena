@@ -39,6 +39,7 @@ class Language(str, Enum):
     DART = "dart"
     CPP = "cpp"
     PHP = "php"
+    R = "r"
     CLOJURE = "clojure"
     ELIXIR = "elixir"
     TERRAFORM = "terraform"
@@ -58,6 +59,10 @@ class Language(str, Enum):
     """OmniSharp language server for C# (instead of the default csharp-ls by microsoft).
     Currently has problems with finding references, and generally seems less stable and performant.
     """
+    RUBY_SOLARGRAPH = "ruby_solargraph"
+    """Solargraph language server for Ruby (legacy, experimental).
+    Use Language.RUBY (ruby-lsp) for better performance and modern LSP features.
+    """
 
     @classmethod
     def iter_all(cls, include_experimental: bool = False) -> Iterable[Self]:
@@ -69,7 +74,7 @@ class Language(str, Enum):
         """
         Check if the language server is experimental or deprecated.
         """
-        return self in {self.TYPESCRIPT_VTS, self.PYTHON_JEDI, self.CSHARP_OMNISHARP}
+        return self in {self.TYPESCRIPT_VTS, self.PYTHON_JEDI, self.CSHARP_OMNISHARP, self.RUBY_SOLARGRAPH}
 
     def __str__(self) -> str:
         return self.value
@@ -95,6 +100,8 @@ class Language(str, Enum):
             case self.GO:
                 return FilenameMatcher("*.go")
             case self.RUBY:
+                return FilenameMatcher("*.rb", "*.erb")
+            case self.RUBY_SOLARGRAPH:
                 return FilenameMatcher("*.rb")
             case self.CPP:
                 return FilenameMatcher("*.cpp", "*.h", "*.hpp", "*.c", "*.hxx", "*.cc", "*.cxx")
@@ -104,6 +111,8 @@ class Language(str, Enum):
                 return FilenameMatcher("*.dart")
             case self.PHP:
                 return FilenameMatcher("*.php")
+            case self.R:
+                return FilenameMatcher("*.R", "*.r", "*.Rmd", "*.Rnw")
             case self.CLOJURE:
                 return FilenameMatcher("*.clj", "*.cljs", "*.cljc", "*.edn")  # codespell:ignore edn
             case self.ELIXIR:
