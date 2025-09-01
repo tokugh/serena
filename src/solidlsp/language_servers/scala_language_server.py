@@ -5,12 +5,14 @@ Provides Scala specific instantiation of the LanguageServer class. Contains vari
 import logging
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import threading
 
 from overrides import override
 
+from solidlsp import ls_types
 from solidlsp.ls import SolidLanguageServer
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_logger import LanguageServerLogger
@@ -39,6 +41,9 @@ class ScalaLanguageServer(SolidLanguageServer):
     Provides Scala specific instantiation of the LanguageServer class. Contains various configurations and settings specific to Scala.
     """
 
+    _metals_compiling: bool
+    _is_metals: bool
+
     def __init__(
         self, config: LanguageServerConfig, logger: LanguageServerLogger, repository_root_path: str, solidlsp_settings: SolidLSPSettings
     ):
@@ -56,7 +61,9 @@ class ScalaLanguageServer(SolidLanguageServer):
         )
         self.server_ready = threading.Event()
         self.initialize_searcher_command_available = threading.Event()
-
+        self._metals_refs_retry_event = threading.Event()
+        self._metals_compiling = False
+        self._is_metals = False
     @override
     def is_ignored_dirname(self, dirname: str) -> bool:
         return super().is_ignored_dirname(dirname) or dirname in [
@@ -81,11 +88,10 @@ class ScalaLanguageServer(SolidLanguageServer):
         cs_command_path = shutil.which("cs")
 
         if not os.path.exists(metals_executable):
-            if not coursier_command_path:
-                raise RuntimeError("'coursier' not found isn't in PATH. Please install coursier try again.")
-
             if not cs_command_path:
                 logger.log("'cs' command not found. Trying to install it using 'coursier'.", logging.INFO)
+                if not coursier_command_path:
+                    raise RuntimeError("'coursier' not found isn't in PATH. Please install coursier try again.")
                 try:
                     logger.log("Running 'coursier setup --yes' to install 'cs'...", logging.INFO)
                     subprocess.run([coursier_command_path, "setup", "--yes"], check=True, capture_output=True, text=True)
@@ -196,6 +202,10 @@ class ScalaLanguageServer(SolidLanguageServer):
 
         def window_log_message(msg):
             self.logger.log(f"LSP: window/logMessage: {msg}", logging.INFO)
+            msg = (params or {}).get("message", "").lower()
+            if "find references" in msg or "references again" in msg:
+                self._metals_refs_retry_event.set()
+
 
         def window_show_message_request(params):
             """
@@ -233,6 +243,14 @@ class ScalaLanguageServer(SolidLanguageServer):
             if params.get("text") == "Indexing finished":
                 self.logger.log("Metals indexing finished, marking as ready", logging.INFO)
                 self.server_ready.set()
+            text = (params or {}).get("text", "")
+            show = bool((params or {}).get("show"))
+            hide = bool((params or {}).get("hide"))
+            if show and re.search(r"compile", text, re.I):
+                self._metals_compiling = True
+            if hide and self._metals_compiling:
+                self._metals_compiling = False
+                self._metals_refs_retry_event.set()
 
         self.server.on_request("client/registerCapability", register_capability_handler)
         self.server.on_notification("window/logMessage", window_log_message)
@@ -261,4 +279,39 @@ class ScalaLanguageServer(SolidLanguageServer):
 
     @override
     def _get_wait_time_for_cross_file_referencing(self) -> float:
-        return 3
+        return 5
+
+    @override
+    def request_references(self, relative_file_path: str, line: int, column: int) -> list[ls_types.Location]:
+        """
+        Requests references and handles Metals' specific behavior of returning incomplete results
+        while background compilation runs. It waits for a signal that compilation is done and
+        retries the request to get complete results.
+        """
+        self._metals_refs_retry_event.clear()
+
+        # Initial request
+        references = super().request_references(relative_file_path, line, column)
+
+        # Wait for the retry event, which is set when Metals finishes compilation
+        # The timeout is a fallback.
+        got_new_references = self._metals_refs_retry_event.wait(timeout=self._get_wait_time_for_cross_file_referencing())
+
+        if got_new_references:
+            self.logger.log("Metals compilation finished, re-requesting references.", logging.INFO)
+            # Second request to get potentially more complete results
+            more_references = super().request_references(relative_file_path, line, column)
+
+            # Combine and deduplicate references
+            all_references = references + more_references
+            unique_references = []
+            seen_hashes = set()
+            for ref in all_references:
+                # Create a stable hashable representation of the location dictionary
+                ref_hash = tuple(sorted(ref.items()))
+                if ref_hash not in seen_hashes:
+                    unique_references.append(ref)
+                    seen_hashes.add(ref_hash)
+            references = unique_references
+
+        return references
