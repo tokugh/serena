@@ -271,7 +271,6 @@ markers = [
   "nix: language server running for Nix",
   "dart: language server running for Dart",
   "erlang: language server running for Erlang",
-  "scala: language server running for Scala",
 ]
 
 [tool.codespell]
