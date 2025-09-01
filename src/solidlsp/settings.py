@@ -11,6 +11,15 @@ from typing import Any
 @dataclass
 class SolidLSPSettings:
     solidlsp_dir: str = str(pathlib.Path.home() / ".solidlsp")
+    """
+    Path to the directory in which to store global Solid-LSP data (which is not project-specific)
+    """
+    project_data_relative_path: str = ".solidlsp"
+    """
+    Relative path within each project directory where Solid-LSP can store project-specific data, e.g. cache files.
+    For instance, if this is ".solidlsp" and the project is located at "/home/user/myproject",
+    then Solid-LSP will store project-specific data in "/home/user/myproject/.solidlsp".
+    """
     ls_specifics: dict[str, Any] = field(default_factory=dict)
     """Mapping from language server class names to any specifics that the language server may make use of."""
 
