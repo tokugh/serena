@@ -64,6 +64,7 @@ class ScalaLanguageServer(SolidLanguageServer):
         self._metals_refs_retry_event = threading.Event()
         self._metals_compiling = False
         self._is_metals = False
+
     @override
     def is_ignored_dirname(self, dirname: str) -> bool:
         return super().is_ignored_dirname(dirname) or dirname in [
@@ -204,7 +205,6 @@ class ScalaLanguageServer(SolidLanguageServer):
             self.logger.log(f"LSP: window/logMessage: {msg}", logging.INFO)
             if "find references" in msg or "references again" in msg:
                 self._metals_refs_retry_event.set()
-
 
         def window_show_message_request(params):
             """
