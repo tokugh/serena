@@ -437,7 +437,9 @@ class CSharpLanguageServer(SolidLanguageServer):
         logger.log("Downloading .NET 9 runtime...", logging.INFO)
         dotnet_dir.mkdir(parents=True, exist_ok=True)
 
-        custom_dotnet_runtime_url = solidlsp_settings.ls_specific_settings.get(cls.get_language_enum_instance(), {}).get("dotnet_runtime_url")
+        custom_dotnet_runtime_url = solidlsp_settings.ls_specific_settings.get(cls.get_language_enum_instance(), {}).get(
+            "dotnet_runtime_url"
+        )
         if custom_dotnet_runtime_url is not None:
             logger.log(f"Using custom .NET runtime url: {custom_dotnet_runtime_url}", logging.INFO)
             url = custom_dotnet_runtime_url

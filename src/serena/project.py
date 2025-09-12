@@ -306,5 +306,9 @@ class Project:
             ls_logger,
             self.project_root,
             timeout=ls_timeout,
-            solidlsp_settings=SolidLSPSettings(solidlsp_dir=SERENA_MANAGED_DIR_IN_HOME, project_data_relative_path=SERENA_MANAGED_DIR_NAME, ls_specific_settings=ls_specific_settings),
+            solidlsp_settings=SolidLSPSettings(
+                solidlsp_dir=SERENA_MANAGED_DIR_IN_HOME,
+                project_data_relative_path=SERENA_MANAGED_DIR_NAME,
+                ls_specific_settings=ls_specific_settings,
+            ),
         )
