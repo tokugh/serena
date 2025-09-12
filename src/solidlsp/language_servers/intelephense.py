@@ -25,7 +25,7 @@ class Intelephense(SolidLanguageServer):
     """
     Provides PHP specific instantiation of the LanguageServer class using Intelephense.
 
-    You can pass the following entries in ls_specifics["php"]:
+    You can pass the following entries in ls_specific_settings["php"]:
         - maxMemory
         - maxFileSize
     """
@@ -132,7 +132,7 @@ class Intelephense(SolidLanguageServer):
         if license_key:
             initialization_options["licenceKey"] = license_key
 
-        custom_intelephense_settings = self._solidlsp_settings.ls_specifics.get(self.get_language_enum_instance(), {})
+        custom_intelephense_settings = self._solidlsp_settings.ls_specific_settings.get(self.get_language_enum_instance(), {})
         max_memory = custom_intelephense_settings.get("maxMemory")
         max_file_size = custom_intelephense_settings.get("maxFileSize")
         if max_memory is not None:

@@ -20,7 +20,7 @@ class SolidLSPSettings:
     For instance, if this is ".solidlsp" and the project is located at "/home/user/myproject",
     then Solid-LSP will store project-specific data in "/home/user/myproject/.solidlsp".
     """
-    ls_specifics: dict[str, Any] = field(default_factory=dict)
+    ls_specific_settings: dict[str, Any] = field(default_factory=dict)
     """Mapping from language server class names to any specifics that the language server may make use of."""
 
     def __post_init__(self):

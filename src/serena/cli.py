@@ -454,7 +454,7 @@ class ProjectCommands(AutoRegisteringGroup):
         serena_config = SerenaConfig.from_config_file()
         proj = Project.load(os.path.abspath(project))
         click.echo(f"Indexing symbols in project {project}…")
-        ls = proj.create_language_server(log_level=lvl, ls_timeout=timeout, ls_specifics=serena_config.ls_specifics)
+        ls = proj.create_language_server(log_level=lvl, ls_timeout=timeout, ls_specific_settings=serena_config.ls_specific_settings)
         log_file = os.path.join(project, ".serena", "logs", "indexing.txt")
 
         collected_exceptions: list[Exception] = []
